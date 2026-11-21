@@ -165,6 +165,7 @@ unsafe extern "C" fn on_sdk_callback(
                 ctx.screen_monitor.enqueue_raw_frame(
                     sn,
                     f.addr,
+                    f.size,
                     f.width,
                     f.height,
                     f.bytes_per_line,
@@ -179,6 +180,7 @@ unsafe extern "C" fn on_sdk_callback(
                 ctx.screen_monitor.enqueue_raw_frame(
                     sn,
                     f.addr,
+                    f.size,
                     f.width,
                     f.height,
                     f.bytes_per_line,

@@ -15,6 +15,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/devices/{sn}/lock", post(lock_device))
         .route("/api/devices/{sn}/unlock", post(unlock_device))
         .route("/api/devices/{sn}/recenter", post(recenter))
+        .route("/api/devices/{sn}/find", post(find_device))
         .route("/api/devices/{sn}/volume", post(set_volume))
         .route("/api/devices/{sn}/alias", post(set_alias))
         .route("/api/devices/{sn}/screen", post(set_screen))
@@ -48,6 +49,11 @@ async fn unlock_device(State(state): State<Arc<AppState>>, Path(sn): Path<String
 async fn recenter(State(state): State<Arc<AppState>>, Path(sn): Path<String>) -> impl IntoResponse {
     let ret = state.device_manager.recenter(&sn);
     Json(json!({ "success": ret == 0, "ret": ret }))
+}
+
+async fn find_device(State(state): State<Arc<AppState>>, Path(sn): Path<String>) -> impl IntoResponse {
+    let ret = state.device_manager.find_device(&sn).await;
+    Json(json!({ "success": true, "ret": ret }))
 }
 
 async fn set_volume(

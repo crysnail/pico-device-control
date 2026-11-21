@@ -91,16 +91,7 @@ async fn get_stream_status(
 }
 
 struct MjpegGuard {
-    state: Arc<AppState>,
-    sn: String,
-}
-
-impl Drop for MjpegGuard {
-    fn drop(&mut self) {
-        if self.state.screen_monitor.subscriber_count(&self.sn) == 0 {
-            self.state.device_manager.stop_monitor(&self.sn);
-        }
-    }
+    _sn: String,
 }
 
 fn format_mjpeg_part(jpeg: &Bytes) -> Bytes {
@@ -119,7 +110,9 @@ async fn get_mjpeg_stream(
     State(state): State<Arc<AppState>>,
     Path(sn): Path<String>,
 ) -> impl IntoResponse {
-    state.device_manager.start_monitor(&sn);
+    if !state.screen_monitor.get_stream_status(&sn).is_requested {
+        state.device_manager.start_monitor(&sn);
+    }
     let rx = state.screen_monitor.subscribe(&sn);
     let health = state.sdk_service.check_suite_health().await;
     let is_ready = health.is_port_open && health.is_sdk_active;
@@ -130,34 +123,31 @@ async fn get_mjpeg_stream(
         .unwrap_or_else(|| ScreenMonitorService::generate_placeholder_jpeg(is_ready));
 
     let guard = MjpegGuard {
-        state: state.clone(),
-        sn: sn.clone(),
+        _sn: sn.clone(),
     };
 
     let body_stream = stream::unfold(
-        (Some(initial_jpeg), rx, guard, is_ready),
-        |(mut init, mut rx, guard, ready)| async move {
+        (Some(initial_jpeg), rx, guard, state, sn, is_ready),
+        |(mut init, mut rx, guard, state, sn, ready)| async move {
             if let Some(first) = init.take() {
-                return Some((Ok::<Bytes, std::io::Error>(format_mjpeg_part(&first)), (None, rx, guard, ready)));
+                return Some((Ok::<Bytes, std::io::Error>(format_mjpeg_part(&first)), (None, rx, guard, state, sn, ready)));
             }
 
             let next_frame = match timeout(Duration::from_millis(1200), rx.recv()).await {
                 Ok(Ok(frame)) => frame,
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => guard
-                    .state
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => state
                     .screen_monitor
-                    .get_latest_frame(&guard.sn)
+                    .get_latest_frame(&sn)
                     .unwrap_or_else(|| ScreenMonitorService::generate_placeholder_jpeg(ready)),
-                _ => guard
-                    .state
+                _ => state
                     .screen_monitor
-                    .get_latest_frame(&guard.sn)
+                    .get_latest_frame(&sn)
                     .unwrap_or_else(|| ScreenMonitorService::generate_placeholder_jpeg(ready)),
             };
 
             Some((
                 Ok::<Bytes, std::io::Error>(format_mjpeg_part(&next_frame)),
-                (None, rx, guard, ready),
+                (None, rx, guard, state, sn, ready),
             ))
         },
     );

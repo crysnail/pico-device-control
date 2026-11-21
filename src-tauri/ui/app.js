@@ -82,6 +82,33 @@ function safeSetText(id, text) {
   if (el) el.textContent = text;
 }
 
+async function copyTextToClipboard(text) {
+  const val = String(text ?? '');
+  if (!val) return false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(val);
+      return true;
+    }
+  } catch { }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = val;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    ta.style.pointerEvents = 'none';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 // ======================== 全局状态 ========================
 const devices = new Map();
 let projects = [];
@@ -410,6 +437,7 @@ document.addEventListener('change', (e) => {
     case 'onTestUdpActionChange': onTestUdpActionChange(el.value); break;
     case 'saveDeviceProject': saveDeviceProject(el.dataset.arg || '', el.value); break;
     case 'updateDeploySelectedCount': updateDeploySelectedCount(); break;
+    case 'toggleAllAdbSyncSelect': toggleAllAdbSyncSelect(el.checked); break;
     case 'selectDeployUninstallPkg':
       if (el.value) {
         const input = document.getElementById('deploy-uninstall-pkg');
@@ -602,7 +630,7 @@ async function connectRemoteService() {
 
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3500);
+    const timer = setTimeout(() => controller.abort(new Error('连接超时（6秒内未收到响应）')), 6000);
     const res = await originalFetch(`http://${ip}:${port}/api/system/health`, { signal: controller.signal });
     clearTimeout(timer);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -628,7 +656,10 @@ async function connectRemoteService() {
   } catch (err) {
     if (statusEl) {
       statusEl.className = 'panel-sub text-rose';
-      statusEl.textContent = `❌ 连接失败 (${err.message || '超时或服务未开启'})，请确认对方机器已启动服务且防火墙放行 ${port} 端口`;
+      const detail = err?.name === 'AbortError'
+        ? '连接超时（6秒内未收到对方响应）'
+        : (err?.message || '网络不可达或服务未开启');
+      statusEl.textContent = `❌ 连接失败 (${detail})，请确认对方机器已启动 PicoManager.exe、处于同一局域网且防火墙放行 ${port} 端口`;
       statusEl.classList.remove('hidden');
     }
   } finally {
@@ -636,11 +667,10 @@ async function connectRemoteService() {
   }
 }
 
-function copyLanUrl() {
+async function copyLanUrl() {
   if (!PRIMARY_LAN_URL) return;
-  navigator.clipboard.writeText(PRIMARY_LAN_URL).then(() => {
-    showToast(`已复制平板局域网地址: ${PRIMARY_LAN_URL}`, '📡');
-  });
+  const ok = await copyTextToClipboard(PRIMARY_LAN_URL);
+  showToast(ok ? `已复制平板局域网地址: ${PRIMARY_LAN_URL}` : `复制失败，请手动复制: ${PRIMARY_LAN_URL}`, ok ? '📡' : '⚠️');
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
@@ -932,18 +962,13 @@ function renderMatrix() {
       isMonitoring ? 'device-card--monitoring' : '',
       !dev.online ? 'device-card--offline' : ''
     ].filter(Boolean).join(' ');
-
-    card.onclick = () => {
-      if (selectedSns.has(dev.sn)) selectedSns.delete(dev.sn);
-      else selectedSns.add(dev.sn);
-      playSound('click');
-      renderMatrix();
-    };
+    card.dataset.action = 'toggleDeviceSelect';
+    card.dataset.arg = dev.sn;
 
     card.innerHTML = `
       <div class="device-card__head">
         <div class="device-card__id">
-          <input type="checkbox" ${isSelected ? 'checked' : ''} data-action="toggleDeviceSelect" data-arg="${escapeHtml(dev.sn)}" data-stop="1" aria-label="选择设备 ${escapeHtml(dev.displayName)}">
+          <input type="checkbox" ${isSelected ? 'checked' : ''} aria-label="选择设备 ${escapeHtml(dev.displayName)}">
           <span class="device-card__name" title="${escapeHtml(dev.displayName)}">${escapeHtml(dev.displayName)}</span>
         </div>
         <span class="${badgeClass}"><span class="dot"></span>${badgeText}</span>
@@ -970,8 +995,10 @@ function renderMatrix() {
 }
 
 function toggleDeviceSelect(sn) {
+  if (!sn) return;
   if (selectedSns.has(sn)) selectedSns.delete(sn);
   else selectedSns.add(sn);
+  playSound('click');
   renderMatrix();
 }
 
@@ -1081,9 +1108,10 @@ function refreshMonitorTelemetry(dev) {
   safeSetText('panel-app', dev.trackingLost ? '⚠️ 定位丢失' : (isDesktopApp(dev.currentApp) ? '系统桌面' : (dev.appTitle || dev.currentApp)));
 }
 
-function copyCurrentSn() {
+async function copyCurrentSn() {
   if (!currentMonitorSn) return;
-  navigator.clipboard.writeText(currentMonitorSn).then(() => showToast(`已复制 SN: ${currentMonitorSn}`, '📋'));
+  const ok = await copyTextToClipboard(currentMonitorSn);
+  showToast(ok ? `已复制 SN: ${currentMonitorSn}` : `复制失败，SN: ${currentMonitorSn}`, ok ? '📋' : '⚠️');
 }
 
 function startCanvasSimulation() {
@@ -1222,6 +1250,7 @@ function startStreamStatusPolling(sn) {
         if (data.hasRealFrame || st?.phase === 'Streaming') {
           safeSetText('stream-status-text', `LIVE ${st?.lastWidth || 854}x${st?.lastHeight || 480}`);
           safeSetText('monitor-fps-indicator', `${(st?.fps || 0).toFixed(1)} FPS`);
+          if (!snapshotTimer) startSnapshotStream(sn);
         } else if (data.suiteHealth && !data.suiteHealth.isPortOpen) {
           safeSetText('stream-status-text', '套件 60061 未就绪');
         } else {
@@ -1281,6 +1310,11 @@ async function singleDeviceAction(action) {
       body: JSON.stringify({ screenOn })
     });
     showToast(`已向 ${dev.displayName} 下发${screenOn ? '亮屏' : '息屏'}`);
+  } else if (action === 'find') {
+    await fetch(`/api/devices/${sn}/find`, { method: 'POST' });
+    showToast(`已向 ${dev.displayName} 发送查找设备提示（亮屏/蜂鸣）`, '🔦');
+  } else if (action === 'voice_call') {
+    showToast(`语音通话请确保 PICO Business Suite 已登录并连接头显音频通道`, '🎙️');
   } else if (action === 'reboot') {
     if (!confirm(`确认重启头显【${dev.displayName}】吗？`)) return;
     await fetch(`/api/devices/${sn}/reboot`, { method: 'POST' });
@@ -1321,6 +1355,12 @@ async function batchAction(action) {
     const screenOn = action === 'screen_on';
     await fetch('/api/batch/screen', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snList, screenOn }) });
     showToast(`已对 ${snList.length} 台设备执行批量${screenOn ? '亮屏' : '息屏'}`);
+  } else if (action === 'recenter') {
+    await fetch('/api/batch/recenter', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snList }) });
+    showToast(`已向 ${snList.length} 台设备批量下发视角复位`, '🎯');
+  } else if (action === 'find') {
+    await fetch('/api/batch/find', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snList }) });
+    showToast(`已向 ${snList.length} 台设备发送查找定位提示`, '🔦');
   }
 }
 
@@ -1921,13 +1961,15 @@ function renderAdbTable() {
   tbody.innerHTML = '';
 
   if (adbDevicesList.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="panel-sub" style="text-align: center; padding: 1.5rem;">暂无已连接的 ADB 设备，请点击「全网段自动扫描」或手动输入 IP 连接</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="panel-sub" style="text-align: center; padding: 1.5rem;">暂无已连接的 ADB 设备，请点击「全网段自动扫描」或手动输入 IP 连接</td></tr>';
     return;
   }
 
   adbDevicesList.forEach(dev => {
     const tr = document.createElement('tr');
+    const canSync = dev.isConnected && !!dev.sn;
     tr.innerHTML = `
+      <td><input type="checkbox" name="adb-sync-target" value="${escapeHtml(dev.target)}" ${canSync ? 'checked' : 'disabled'}></td>
       <td class="mono"><strong>${dev.isWireless ? '📶' : '🔌'} ${escapeHtml(dev.target)}</strong></td>
       <td class="mono text-accent">${dev.sn ? escapeHtml(dev.sn) : '--'}</td>
       <td>${escapeHtml(dev.model || 'PICO VR')}</td>
@@ -1940,6 +1982,12 @@ function renderAdbTable() {
       </td>
     `;
     tbody.appendChild(tr);
+  });
+}
+
+function toggleAllAdbSyncSelect(checked) {
+  document.querySelectorAll('input[name="adb-sync-target"]:not(:disabled)').forEach(cb => {
+    cb.checked = !!checked;
   });
 }
 
@@ -1991,7 +2039,12 @@ async function disconnectAdb(target) {
 async function readAdbSn(target) {
   const res = await fetch('/api/adb/read-sn', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target }) });
   const data = await res.json();
-  showToast(data.success ? `读取到 SN: ${data.sn}` : '读取 SN 失败', data.success ? '✓' : '⚠️');
+  if (data.success && data.sn) {
+    const copied = await copyTextToClipboard(data.sn);
+    showToast(copied ? `已读取并复制 SN: ${data.sn}` : `读取到 SN: ${data.sn}`, copied ? '📋' : '✓');
+  } else {
+    showToast('读取 SN 失败', '⚠️');
+  }
   await loadAdbDevices();
 }
 
@@ -2002,9 +2055,18 @@ async function rebootAdb(target) {
 }
 
 async function syncAdbDevicesToConfig() {
-  const res = await fetch('/api/adb/sync-to-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  const checked = Array.from(document.querySelectorAll('input[name="adb-sync-target"]:checked')).map(cb => cb.value);
+  if (checked.length === 0) {
+    showToast('请先在下方列表中勾选需要同步的设备', '⚠️');
+    return;
+  }
+  const res = await fetch('/api/adb/sync-to-config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ targets: checked })
+  });
   const data = await res.json();
-  showToast(`已同步 ${data.syncedCount || 0} 台新设备`);
+  showToast(`已将所选 ${checked.length} 台中的 ${data.syncedCount || 0} 台新设备同步至机号列表`);
   await loadDevices();
 }
 
@@ -2062,10 +2124,11 @@ function clearDeployLog() {
   safeSetText('deploy-log-counter', '0 条');
 }
 
-function copyDeployLog() {
+async function copyDeployLog() {
   const logs = document.getElementById('deploy-console-logs');
   if (!logs || !logs.textContent.trim()) return;
-  navigator.clipboard.writeText(logs.textContent).then(() => showToast('已复制部署日志', '📋'));
+  const ok = await copyTextToClipboard(logs.textContent);
+  showToast(ok ? '已复制部署日志' : '复制失败', ok ? '📋' : '⚠️');
 }
 
 function toggleDeployLogHeight() {
@@ -2157,26 +2220,31 @@ async function executeDeployCreateFolder() {
 
 async function queryDeployPackages() {
   const targets = getSelectedDeployTargets();
-  const target = targets[0] || adbDevicesList.find(d => d.isConnected)?.target;
-  if (!target) return showToast('请先连接设备', '⚠️');
+  if (targets.length === 0) return showToast('请先在上方「目标头显设备」中勾选至少一台设备', '⚠️');
+  const target = targets[0];
+  const devInfo = adbDevicesList.find(d => d.target === target);
+  const label = devInfo?.sn ? `${target} (${devInfo.sn.slice(-6)})` : target;
+  safeSetText('deploy-pkg-source-badge', `读取中: ${label}`);
   const res = await fetch(`/api/adb/packages?target=${encodeURIComponent(target)}`);
   const data = await res.json();
   const dd = document.getElementById('deploy-pkg-dropdown');
   if (data.success && data.packages?.length && dd) {
-    dd.innerHTML = `<option value="">-- 选择已安装的第三方应用 (${data.packages.length} 个) --</option>` +
+    dd.innerHTML = `<option value="">-- 来自 ${escapeHtml(label)} 的第三方应用 (${data.packages.length} 个) --</option>` +
       data.packages.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
     dd.classList.remove('hidden');
-    showToast(`已读取 ${data.packages.length} 个应用`);
+    safeSetText('deploy-pkg-source-badge', `来源: ${label} · ${data.packages.length} 个应用`);
+    showToast(`已从 ${label} 读取 ${data.packages.length} 个应用`);
   } else {
-    showToast('未读取到第三方应用', '⚠️');
+    safeSetText('deploy-pkg-source-badge', `来源: ${label} · 未读取到应用`);
+    showToast(`未能从 ${label} 读取到第三方应用`, '⚠️');
   }
 }
 
 async function executeDeployUninstallApp() {
   const packageName = document.getElementById('deploy-uninstall-pkg').value.trim();
   const targets = getSelectedDeployTargets();
-  if (!packageName || targets.length === 0) return showToast('请输入包名并选择目标设备', '⚠️');
-  if (!confirm(`确认从 ${targets.length} 台设备卸载【${packageName}】吗？`)) return;
+  if (!packageName || targets.length === 0) return showToast('请输入包名并在上方勾选目标设备', '⚠️');
+  if (!confirm(`确认从以下 ${targets.length} 台选中头显卸载【${packageName}】吗？\n${targets.join(', ')}`)) return;
   const res = await fetch('/api/adb/uninstall', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

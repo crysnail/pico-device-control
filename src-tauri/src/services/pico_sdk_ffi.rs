@@ -154,6 +154,7 @@ struct NativeApi {
     stop_monitor: Option<unsafe extern "C" fn(*const c_char) -> c_int>,
     start_monitor_screen: Option<unsafe extern "C" fn(*const c_char, c_int) -> c_int>,
     stop_monitor_screen: Option<unsafe extern "C" fn(*const c_char) -> c_int>,
+    device_control_json: Option<unsafe extern "C" fn(*const c_char, *const c_char) -> c_int>,
 }
 
 // Library 函数指针在进程存活期内保持静态有效
@@ -246,6 +247,7 @@ fn load_native_api() -> Option<NativeApi> {
                     let stop_monitor = lib.get::<unsafe extern "C" fn(*const c_char) -> c_int>(b"StopMonitor\0").ok().map(|s| *s);
                     let start_monitor_screen = lib.get::<unsafe extern "C" fn(*const c_char, c_int) -> c_int>(b"StartMonitorScreen\0").ok().map(|s| *s);
                     let stop_monitor_screen = lib.get::<unsafe extern "C" fn(*const c_char) -> c_int>(b"StopMonitorScreen\0").ok().map(|s| *s);
+                    let device_control_json = lib.get::<unsafe extern "C" fn(*const c_char, *const c_char) -> c_int>(b"DeviceControlJson\0").ok().map(|s| *s);
 
                     return Some(NativeApi {
                         _lib: lib,
@@ -271,6 +273,7 @@ fn load_native_api() -> Option<NativeApi> {
                         stop_monitor,
                         start_monitor_screen,
                         stop_monitor_screen,
+                        device_control_json,
                     });
                 }
                 Err(err) => {
@@ -446,6 +449,13 @@ pub fn start_monitor(sn: &str) -> i32 {
 pub fn stop_monitor(sn: &str) -> i32 {
     match (api().and_then(|a| a.stop_monitor), to_cstring(sn)) {
         (Some(f), Some(c)) => unsafe { f(c.as_ptr()) },
+        _ => -1,
+    }
+}
+
+pub fn device_control_json(sn: &str, json_str: &str) -> i32 {
+    match (api().and_then(|a| a.device_control_json), to_cstring(sn), to_cstring(json_str)) {
+        (Some(f), Some(c_sn), Some(c_json)) => unsafe { f(c_sn.as_ptr(), c_json.as_ptr()) },
         _ => -1,
     }
 }

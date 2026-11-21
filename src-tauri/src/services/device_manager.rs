@@ -566,8 +566,14 @@ impl PicoDeviceManager {
     pub fn start_monitor(&self, sn: &str) -> i32 {
         let ret = if self.is_sdk_active() {
             let mut r = pico_sdk_ffi::start_monitor_screen(sn, MonitorQuality::Quality480P);
+            tracing::info!("[PICO SDK] StartMonitorScreen({}, Quality480P) -> ret={}", sn, r);
+            if r != 0 {
+                r = pico_sdk_ffi::start_monitor_screen(sn, MonitorQuality::QualityUserConfig);
+                tracing::info!("[PICO SDK] StartMonitorScreen({}, QualityUserConfig) -> ret={}", sn, r);
+            }
             if r != 0 {
                 r = pico_sdk_ffi::start_monitor(sn);
+                tracing::info!("[PICO SDK] StartMonitor({}) -> ret={}", sn, r);
             }
             if r == 0 {
                 self.screen_monitor.record_start_requested(
@@ -697,6 +703,37 @@ impl PicoDeviceManager {
             self.reboot(sn);
             count += 1;
             sleep(Duration::from_millis(100)).await;
+        }
+        count
+    }
+
+    pub async fn find_device(&self, sn: &str) -> i32 {
+        let mut ret = 0;
+        if self.is_sdk_active() {
+            let _ = pico_sdk_ffi::set_screen_state(sn, 1);
+            ret = pico_sdk_ffi::device_control_json(sn, r#"{"action":"findDevice"}"#);
+        }
+        self.adb_service.set_screen_state(sn, true).await;
+        self.update_screen_state(sn, true);
+        ret
+    }
+
+    pub async fn batch_recenter(&self, sn_list: &[String]) -> usize {
+        let mut count = 0;
+        for sn in sn_list {
+            self.recenter(sn);
+            count += 1;
+            sleep(Duration::from_millis(30)).await;
+        }
+        count
+    }
+
+    pub async fn batch_find(&self, sn_list: &[String]) -> usize {
+        let mut count = 0;
+        for sn in sn_list {
+            self.find_device(sn).await;
+            count += 1;
+            sleep(Duration::from_millis(40)).await;
         }
         count
     }

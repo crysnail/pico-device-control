@@ -761,12 +761,29 @@
   }
 
   .project-card--active {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 1px var(--accent), var(--shadow-glow);
+    border: 2px solid #38bdf8;
+    box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.28), 0 10px 26px -4px rgba(59, 130, 246, 0.50);
+    transform: translateY(-2px);
+  }
+
+  .project-card--active::after {
+    content: '✓ 已选';
+    position: absolute;
+    inset-block-end: 8px;
+    inset-inline-end: 10px;
+    z-index: 2;
+    font-size: 0.68rem;
+    font-weight: 800;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: linear-gradient(135deg, #06b6d4 0%, #3b82f6 100%);
+    color: #ffffff;
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.45);
+    pointer-events: none;
   }
 
   .project-card--active .project-card__bg {
-    opacity: 0.64;
+    opacity: 0.68;
   }
 
   .project-card > *:not(.project-card__bg):not(.project-card__scrim) {
@@ -954,9 +971,15 @@
   }
 
   .device-card--selected {
-    border-color: rgba(6, 182, 212, 0.75);
-    background: rgba(6, 182, 212, 0.14);
-    box-shadow: 0 0 18px -2px rgba(6, 182, 212, 0.32);
+    border: 2px solid #22d3ee;
+    background: linear-gradient(135deg, rgba(6, 182, 212, 0.28) 0%, rgba(59, 130, 246, 0.18) 100%);
+    box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.30), 0 10px 24px -4px rgba(6, 182, 212, 0.45);
+  }
+
+  [data-theme="light"] .device-card--selected {
+    border: 2px solid #0284c7;
+    background: linear-gradient(135deg, rgba(2, 132, 199, 0.22) 0%, rgba(37, 99, 235, 0.14) 100%);
+    box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.24), 0 10px 22px -4px rgba(2, 132, 199, 0.30);
   }
 
   .device-card--monitoring {

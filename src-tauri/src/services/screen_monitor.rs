@@ -43,11 +43,7 @@ impl ScreenMonitorService {
             .name("pico-screen-encoder".into())
             .spawn(move || {
                 while let Some(job) = frame_rx.blocking_recv() {
-                    let jpeg_opt = if job.pix_format == 4 {
-                        bgra_to_jpeg(&job.data, job.width, job.height, job.bytes_per_line, 75)
-                    } else {
-                        yuv420p_to_jpeg(&job.data, job.width, job.height, 75)
-                    };
+                    let jpeg_opt = encode_frame_to_jpeg(&job);
 
                     if let Some(jpeg) = jpeg_opt {
                         let bytes = Bytes::from(jpeg);
@@ -159,6 +155,7 @@ impl ScreenMonitorService {
         &self,
         dev_id: String,
         addr: *const u8,
+        data_size: u32,
         width: u32,
         height: u32,
         bytes_per_line: u32,
@@ -170,6 +167,7 @@ impl ScreenMonitorService {
 
         // 前置限频 (~15fps = 66ms)，保护 CPU 与内存带宽
         let now = Instant::now();
+        let is_first = !self.last_enqueue_ts.contains_key(&dev_id);
         if let Some(mut last) = self.last_enqueue_ts.get_mut(&dev_id) {
             if now.duration_since(*last).as_millis() < 66 {
                 return;
@@ -179,22 +177,42 @@ impl ScreenMonitorService {
             self.last_enqueue_ts.insert(dev_id.clone(), now);
         }
 
-        let copy_len = if pix_format == 4 {
+        let copy_len = if data_size > 0 {
+            data_size as usize
+        } else if matches!(pix_format, 4 | 5 | 16 | 17) {
             let stride = if bytes_per_line >= width * 4 {
                 bytes_per_line
             } else {
                 width * 4
             };
             (stride as usize).saturating_mul(height as usize)
+        } else if pix_format == 13 {
+            let stride = if bytes_per_line >= width * 3 {
+                bytes_per_line
+            } else {
+                width * 3
+            };
+            (stride as usize).saturating_mul(height as usize)
         } else {
-            (width as usize)
-                .saturating_mul(height as usize)
-                .saturating_mul(3)
-                / 2
+            let stride = bytes_per_line.max(width) as usize;
+            stride.saturating_mul(height as usize).saturating_mul(3) / 2
         };
 
         if copy_len == 0 || copy_len > 32 * 1024 * 1024 {
             return;
+        }
+
+        if is_first {
+            tracing::info!(
+                "[ScreenMonitor] 收到首帧回调 SN={} {}x{} stride={} size={} copy_len={} pixFormat={}",
+                dev_id,
+                width,
+                height,
+                bytes_per_line,
+                data_size,
+                copy_len,
+                pix_format
+            );
         }
 
         let slice = std::slice::from_raw_parts(addr, copy_len);
@@ -267,6 +285,81 @@ impl ScreenMonitorService {
     }
 }
 
+fn encode_frame_to_jpeg(job: &RawFrameJob) -> Option<Vec<u8>> {
+    let w = job.width as usize;
+    let h = job.height as usize;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    match job.pix_format {
+        4 | 5 => bgra_to_jpeg(&job.data, job.width, job.height, job.bytes_per_line, 75),
+        16 | 17 => rgba_to_jpeg(&job.data, job.width, job.height, job.bytes_per_line, 75),
+        13 => rgb24_to_jpeg(&job.data, job.width, job.height, job.bytes_per_line, 75),
+        18 => yuv420p_to_jpeg(&job.data, job.width, job.height, job.bytes_per_line, 75),
+        _ => {
+            if job.data.len() >= w * h * 4 {
+                bgra_to_jpeg(&job.data, job.width, job.height, job.bytes_per_line, 75)
+            } else if job.data.len() >= w * h * 3 {
+                rgb24_to_jpeg(&job.data, job.width, job.height, job.bytes_per_line, 75)
+            } else {
+                yuv420p_to_jpeg(&job.data, job.width, job.height, job.bytes_per_line, 75)
+            }
+        }
+    }
+}
+
+fn rgba_to_jpeg(data: &[u8], width: u32, height: u32, bytes_per_line: u32, quality: u8) -> Option<Vec<u8>> {
+    let w = width as usize;
+    let h = height as usize;
+    let stride = if (bytes_per_line as usize) >= w * 4 {
+        bytes_per_line as usize
+    } else {
+        w * 4
+    };
+    if data.len() < stride * h {
+        return None;
+    }
+    let mut rgb = vec![0u8; w * h * 3];
+    for y in 0..h {
+        let src_row = &data[y * stride..y * stride + w * 4];
+        let dst_row = &mut rgb[y * w * 3..(y + 1) * w * 3];
+        for x in 0..w {
+            let si = x * 4;
+            let di = x * 3;
+            dst_row[di] = src_row[si];
+            dst_row[di + 1] = src_row[si + 1];
+            dst_row[di + 2] = src_row[si + 2];
+        }
+    }
+    let mut out = Vec::with_capacity(w * h / 4);
+    let mut enc = JpegEncoder::new_with_quality(&mut out, quality);
+    enc.encode(&rgb, width, height, ColorType::Rgb8.into()).ok()?;
+    Some(out)
+}
+
+fn rgb24_to_jpeg(data: &[u8], width: u32, height: u32, bytes_per_line: u32, quality: u8) -> Option<Vec<u8>> {
+    let w = width as usize;
+    let h = height as usize;
+    let stride = if (bytes_per_line as usize) >= w * 3 {
+        bytes_per_line as usize
+    } else {
+        w * 3
+    };
+    if data.len() < stride * h {
+        return None;
+    }
+    let mut rgb = vec![0u8; w * h * 3];
+    for y in 0..h {
+        let src_row = &data[y * stride..y * stride + w * 3];
+        let dst_row = &mut rgb[y * w * 3..(y + 1) * w * 3];
+        dst_row.copy_from_slice(src_row);
+    }
+    let mut out = Vec::with_capacity(w * h / 4);
+    let mut enc = JpegEncoder::new_with_quality(&mut out, quality);
+    enc.encode(&rgb, width, height, ColorType::Rgb8.into()).ok()?;
+    Some(out)
+}
+
 fn bgra_to_jpeg(data: &[u8], width: u32, height: u32, bytes_per_line: u32, quality: u8) -> Option<Vec<u8>> {
     let w = width as usize;
     let h = height as usize;
@@ -298,25 +391,30 @@ fn bgra_to_jpeg(data: &[u8], width: u32, height: u32, bytes_per_line: u32, quali
     Some(out)
 }
 
-fn yuv420p_to_jpeg(data: &[u8], width: u32, height: u32, quality: u8) -> Option<Vec<u8>> {
+fn yuv420p_to_jpeg(data: &[u8], width: u32, height: u32, bytes_per_line: u32, quality: u8) -> Option<Vec<u8>> {
     let w = width as usize;
     let h = height as usize;
-    let frame_size = w * h;
-    let uv_size = (w / 2) * (h / 2);
-    if data.len() < frame_size + uv_size * 2 {
+    let y_stride = if (bytes_per_line as usize) >= w && data.len() >= (bytes_per_line as usize) * h * 3 / 2 {
+        bytes_per_line as usize
+    } else {
+        w
+    };
+    let uv_stride = y_stride / 2;
+    let y_plane_size = y_stride * h;
+    let uv_plane_size = uv_stride * (h / 2);
+    if data.len() < y_plane_size + uv_plane_size * 2 {
         return None;
     }
 
-    let y_plane = &data[0..frame_size];
-    let u_plane = &data[frame_size..frame_size + uv_size];
-    let v_plane = &data[frame_size + uv_size..frame_size + uv_size * 2];
+    let y_plane = &data[0..y_plane_size];
+    let u_plane = &data[y_plane_size..y_plane_size + uv_plane_size];
+    let v_plane = &data[y_plane_size + uv_plane_size..y_plane_size + uv_plane_size * 2];
 
-    let mut rgb = vec![0u8; frame_size * 3];
-    let half_w = w / 2;
+    let mut rgb = vec![0u8; w * h * 3];
 
     for j in 0..h {
-        let y_row = j * w;
-        let uv_row = (j / 2) * half_w;
+        let y_row = j * y_stride;
+        let uv_row = (j / 2) * uv_stride;
         for i in 0..w {
             let y_val = y_plane[y_row + i] as i32;
             let uv_idx = uv_row + (i / 2);
@@ -328,14 +426,14 @@ fn yuv420p_to_jpeg(data: &[u8], width: u32, height: u32, quality: u8) -> Option<
             let g = (298 * c - 100 * u_val - 208 * v_val + 128) >> 8;
             let b = (298 * c + 516 * u_val + 128) >> 8;
 
-            let di = (y_row + i) * 3;
+            let di = (j * w + i) * 3;
             rgb[di] = r.clamp(0, 255) as u8;
             rgb[di + 1] = g.clamp(0, 255) as u8;
             rgb[di + 2] = b.clamp(0, 255) as u8;
         }
     }
 
-    let mut out = Vec::with_capacity(frame_size / 4);
+    let mut out = Vec::with_capacity((w * h) / 4);
     let mut enc = JpegEncoder::new_with_quality(&mut out, quality);
     enc.encode(&rgb, width, height, ColorType::Rgb8.into()).ok()?;
     Some(out)

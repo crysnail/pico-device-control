@@ -135,6 +135,8 @@
             <span class="divider-v" aria-hidden="true"></span>
             <button type="button" class="btn btn--emerald" data-action="batchAction" data-arg="screen_on">💡 批量亮屏</button>
             <button type="button" class="btn" data-action="batchAction" data-arg="screen_off">🌙 批量息屏</button>
+            <button type="button" class="btn" data-action="batchAction" data-arg="recenter">🎯 批量视角复位</button>
+            <button type="button" class="btn btn--indigo" data-action="batchAction" data-arg="find">🔦 查找设备</button>
           </div>
 
           <div class="toolbar-group">
@@ -249,6 +251,8 @@
           <button type="button" class="btn btn--sm" data-action="openCurrentAliasModal">✏️ 修改别名</button>
           <button type="button" class="btn btn--emerald btn--sm" data-action="singleDeviceAction" data-arg="screen_on">💡 点亮屏幕</button>
           <button type="button" class="btn btn--sm" data-action="singleDeviceAction" data-arg="screen_off">🌙 熄灭屏幕</button>
+          <button type="button" class="btn btn--indigo btn--sm" data-action="singleDeviceAction" data-arg="find">🔦 查找设备</button>
+          <button type="button" class="btn btn--sm" data-action="singleDeviceAction" data-arg="voice_call">🎙️ 语音通话</button>
           <button type="button" class="btn btn--amber btn--sm" style="grid-column: span 2;" data-action="singleDeviceAction" data-arg="reboot">🔄 远程重启此头显</button>
         </div>
       </section>
@@ -494,7 +498,7 @@
                   <span id="adb-scan-text">全网段自动扫描并连接头显</span>
                 </button>
                 <button type="button" class="btn btn--sm" data-action="loadAdbDevices">🔄 刷新列表</button>
-                <button type="button" class="btn btn--indigo btn--sm" data-action="syncAdbDevicesToConfig">🔗 同步至机号列表</button>
+                <button type="button" class="btn btn--indigo btn--sm" data-action="syncAdbDevicesToConfig">🔗 同步已选至机号列表</button>
               </div>
               <div class="flex-row">
                 <input id="adb-manual-ip" type="text" class="mono" placeholder="输入头显 IP (如 192.168.1.101)" style="inline-size: 205px;">
@@ -509,6 +513,7 @@
             <table class="data-table">
               <thead>
                 <tr>
+                  <th style="inline-size: 38px;"><input id="adb-scan-select-all" type="checkbox" checked data-change="toggleAllAdbSyncSelect" title="全选/取消勾选同步设备"></th>
                   <th>连接目标</th>
                   <th>硬件 SN</th>
                   <th>型号</th>
@@ -587,8 +592,11 @@
 
           <div class="subcard">
             <div class="flex-between">
-              <strong>🗑️ 批量卸载第三方应用</strong>
-              <button type="button" class="btn btn--xs" data-action="queryDeployPackages">🔍 读取设备已装包名</button>
+              <div class="flex-row">
+                <strong>🗑️ 批量卸载第三方应用</strong>
+                <span id="deploy-pkg-source-badge" class="status-pill">将从勾选的目标头显读取</span>
+              </div>
+              <button type="button" class="btn btn--xs" data-action="queryDeployPackages">🔍 读取当前选中头显已装包名</button>
             </div>
             <select id="deploy-pkg-dropdown" class="hidden" data-change="selectDeployUninstallPkg"></select>
             <div class="flex-row">

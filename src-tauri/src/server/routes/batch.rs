@@ -17,6 +17,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/batch/volume", post(batch_volume))
         .route("/api/batch/reboot", post(batch_reboot))
         .route("/api/batch/screen", post(batch_screen))
+        .route("/api/batch/recenter", post(batch_recenter))
+        .route("/api/batch/find", post(batch_find))
         .route("/api/batch/shutdown", post(batch_shutdown))
 }
 
@@ -103,6 +105,28 @@ async fn batch_reboot(
         return (StatusCode::BAD_REQUEST, Json(json!({ "message": "请至少选择一台设备" })));
     }
     let count = state.device_manager.batch_reboot(&req.sn_list).await;
+    (StatusCode::OK, Json(json!({ "success": true, "processedCount": count })))
+}
+
+async fn batch_recenter(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BatchCommandRequest>,
+) -> impl IntoResponse {
+    if req.sn_list.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "message": "请至少选择一台设备" })));
+    }
+    let count = state.device_manager.batch_recenter(&req.sn_list).await;
+    (StatusCode::OK, Json(json!({ "success": true, "processedCount": count })))
+}
+
+async fn batch_find(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BatchCommandRequest>,
+) -> impl IntoResponse {
+    if req.sn_list.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "message": "请至少选择一台设备" })));
+    }
+    let count = state.device_manager.batch_find(&req.sn_list).await;
     (StatusCode::OK, Json(json!({ "success": true, "processedCount": count })))
 }
 

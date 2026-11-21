@@ -138,13 +138,29 @@ async fn reboot(
     (StatusCode::OK, Json(json!({ "success": ok })))
 }
 
-async fn sync_to_config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+#[derive(Deserialize, Default)]
+struct SyncConfigRequest {
+    #[serde(default)]
+    targets: Option<Vec<String>>,
+}
+
+async fn sync_to_config(
+    State(state): State<Arc<AppState>>,
+    body: Option<Json<SyncConfigRequest>>,
+) -> impl IntoResponse {
+    let filter_targets = body.and_then(|Json(r)| r.targets).filter(|t| !t.is_empty());
     let devices = state.adb_service.get_connected_devices().await;
+    let existing_count = state.device_manager.get_all_devices().len();
     let mut synced = 0usize;
     for dev in devices.into_iter().filter(|d| d.is_connected && !d.sn.is_empty()) {
+        if let Some(ref allow) = filter_targets {
+            if !allow.iter().any(|t| t == &dev.target || t == &dev.sn) {
+                continue;
+            }
+        }
         let existing = state.config_service.get_alias(&dev.sn);
         if existing == dev.sn {
-            let new_alias = format!("{:02}号机", synced + 1);
+            let new_alias = format!("{:02}号机", existing_count + synced + 1);
             state
                 .device_manager
                 .register_headset(&dev.sn, &new_alias, Some(&dev.model));
