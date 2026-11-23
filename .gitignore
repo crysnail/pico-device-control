@@ -28,3 +28,9 @@ src-tauri/target/
 /PicoVR_Server_Deploy.zip
 /PicoVR_全息控制中心.exe
 PICOBusinessSuiteSetup_4.40.0.529_20260312143946.exe
+
+# Android build intermediates, keystore, and temp backups
+android-client/build/
+android-client/*.keystore
+*.idsig
+*.bak

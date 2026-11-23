@@ -1,8 +1,8 @@
 [package]
-name = "pico-manager-desktop"
+name = "PicoVR-Manager"
 version = "2.0.0"
 description = "PICO VR 场馆运营与多设备统一管理控制中心 (Rust + Tauri v2 一体化客户端)"
-authors = ["PICO Manager Team"]
+authors = ["PicoVR-Manager Team"]
 edition = "2021"
 
 [lib]

@@ -4,13 +4,18 @@ pub mod server;
 pub mod services;
 pub mod state;
 
-use commands::{get_runtime_info, reconnect_sdk};
+use commands::{
+    exit_application, get_runtime_info, hide_main_window, minimize_window, reconnect_sdk,
+    start_dragging_window, toggle_maximize_window,
+};
 use state::AppState;
+use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, RunEvent, WindowEvent,
+    Emitter, Manager, RunEvent, WindowEvent,
 };
 
 pub fn run() {
@@ -22,6 +27,14 @@ pub fn run() {
         .try_init();
 
     let app_state: Arc<AppState> = AppState::initialize();
+
+    // 单实例保护：若已有 PicoManager 实例在监听本机端口，则不重复创建后台与托盘图标
+    let probe_addr = SocketAddr::from(([127, 0, 0, 1], app_state.web_port));
+    if TcpStream::connect_timeout(&probe_addr, Duration::from_millis(250)).is_ok() {
+        tracing::warn!("检测到 PicoManager 已在运行 (端口 {})，跳过重复启动", app_state.web_port);
+        return;
+    }
+
     let state_for_setup = app_state.clone();
     let state_for_exit = app_state.clone();
 
@@ -44,7 +57,7 @@ pub fn run() {
             let show_i = MenuItem::with_id(app, "show", "打开控制中心", true, None::<&str>)?;
             let reconnect_i =
                 MenuItem::with_id(app, "reconnect_sdk", "重连 PICO 官方套件", true, None::<&str>)?;
-            let quit_i = MenuItem::with_id(app, "quit", "彻底退出 PicoManager", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit", "彻底退出 PicoVR-Manager", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &reconnect_i, &quit_i])?;
 
             let state_tray = state_for_setup.clone();
@@ -70,6 +83,7 @@ pub fn run() {
                     "quit" => {
                         state_tray.sdk_service.shutdown();
                         app.exit(0);
+                        std::process::exit(0);
                     }
                     _ => {}
                 })
@@ -93,13 +107,21 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // 关闭主窗口时最小化至系统托盘保持后台播控与 UDP/局域网服务在线
+            // 关闭主窗口时通知前端弹出「后台运行 / 完全退出」选择框
             if let WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
+                let _ = window.emit("app-close-requested", ());
                 api.prevent_close();
             }
         })
-        .invoke_handler(tauri::generate_handler![get_runtime_info, reconnect_sdk])
+        .invoke_handler(tauri::generate_handler![
+            get_runtime_info,
+            reconnect_sdk,
+            hide_main_window,
+            exit_application,
+            minimize_window,
+            toggle_maximize_window,
+            start_dragging_window
+        ])
         .build(tauri::generate_context!())
         .expect("构建 PicoManager Tauri 应用失败");
 

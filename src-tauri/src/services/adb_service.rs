@@ -157,7 +157,7 @@ impl AdbService {
         list
     }
 
-    async fn resolve_target(&self, sn_or_target: &str) -> String {
+    pub async fn resolve_target(&self, sn_or_target: &str) -> String {
         let devs = self.get_connected_devices().await;
         if let Some(m) = devs.iter().find(|d| {
             d.sn.eq_ignore_ascii_case(sn_or_target)
@@ -165,6 +165,17 @@ impl AdbService {
                 || d.ip.eq_ignore_ascii_case(sn_or_target)
         }) {
             return Self::sanitize_shell_arg(&m.target);
+        }
+        // 若传入的是 SN 但当前无线 ADB 列表里尚未记录该 SN，则主动查 ro.serialno 匹配
+        for d in &devs {
+            if d.status == "device" {
+                let (code, out, _) = self
+                    .run_adb(&["-s", &d.target, "shell", "getprop", "ro.serialno"], 2000)
+                    .await;
+                if code == 0 && out.trim().eq_ignore_ascii_case(sn_or_target) {
+                    return Self::sanitize_shell_arg(&d.target);
+                }
+            }
         }
         Self::sanitize_shell_arg(sn_or_target)
     }
@@ -255,6 +266,164 @@ impl AdbService {
                 .run_adb(&["-s", &target, "shell", "input", "keyevent", "223"], 3000)
                 .await;
         }
+    }
+
+    pub async fn ensure_connected_by_ip(&self, ip: &str, port: u16) -> String {
+        let clean_ip = Self::sanitize_shell_arg(ip);
+        if clean_ip.is_empty() || clean_ip == "127.0.0.1" {
+            return String::new();
+        }
+        let target = format!("{}:{}", clean_ip, port);
+        let existing = self.get_connected_devices().await;
+        if existing.iter().any(|d| d.target == target && d.is_connected) {
+            return target;
+        }
+        let ok = self.connect(&clean_ip, port).await;
+        if ok { target } else { String::new() }
+    }
+
+    pub async fn set_volume(&self, sn_or_target: &str, vol_0_100: i32) {
+        let target = self.resolve_target(sn_or_target).await;
+        if target.is_empty() {
+            return;
+        }
+        // Android 媒体音量通常为 0..15
+        let android_vol = ((vol_0_100.clamp(0, 100) as f32) * 0.15).round() as i32;
+        let vol_str = android_vol.to_string();
+        let _ = self
+            .run_adb(
+                &["-s", &target, "shell", "cmd", "media_session", "volume", "--stream", "3", "--set", &vol_str],
+                2500,
+            )
+            .await;
+    }
+
+    pub async fn get_volume(&self, sn_or_target: &str) -> Option<u32> {
+        let target = self.resolve_target(sn_or_target).await;
+        if target.is_empty() {
+            return None;
+        }
+        let (code, stdout, _) = self
+            .run_adb(
+                &["-s", &target, "shell", "cmd", "media_session", "volume", "--stream", "3", "--get"],
+                2500,
+            )
+            .await;
+        if code != 0 {
+            return None;
+        }
+        for line in stdout.lines() {
+            if let Some(v_pos) = line.find("volume is ") {
+                let tail = &line[v_pos + 10..];
+                let cur: u32 = tail
+                    .split_whitespace()
+                    .next()
+                    .and_then(|s| s.parse().ok())?;
+                let max_v: u32 = line
+                    .find("[0..")
+                    .and_then(|p| {
+                        let t = &line[p + 4..];
+                        t.split(']').next()?.parse().ok()
+                    })
+                    .unwrap_or(15)
+                    .max(1);
+                return Some(((cur * 100) / max_v).min(100));
+            }
+        }
+        None
+    }
+
+    async fn ensure_find_assets_pushed(&self, target: &str, with_mp3: bool) {
+        static EMBEDDED_FIND_AUDIO_DEX: &[u8] = include_bytes!("../../assets/PicoFindAudio.dex");
+        static EMBEDDED_FIND_RINGTONE_MP3: &[u8] = include_bytes!("../../assets/find_ringtone.mp3");
+
+        let cache_dir = std::env::temp_dir().join("PicoVR-Manager");
+        let _ = std::fs::create_dir_all(&cache_dir);
+        let local_dex = cache_dir.join("PicoFindAudio.dex");
+        let _ = std::fs::write(&local_dex, EMBEDDED_FIND_AUDIO_DEX);
+
+        let check_cmd = if with_mp3 {
+            "wc -c /data/local/tmp/PicoFindAudio.dex /data/local/tmp/pico_find_ringtone.mp3 2>/dev/null"
+        } else {
+            "wc -c /data/local/tmp/PicoFindAudio.dex 2>/dev/null"
+        };
+        let (code_wc, wc_out, _) = self.run_adb(&["-s", target, "shell", check_cmd], 2500).await;
+        let dex_ok = code_wc == 0 && wc_out.contains(&EMBEDDED_FIND_AUDIO_DEX.len().to_string());
+        if !dex_ok {
+            let dex_str = local_dex.to_string_lossy().to_string();
+            let _ = self
+                .run_adb(&["-s", target, "push", &dex_str, "/data/local/tmp/PicoFindAudio.dex"], 6000)
+                .await;
+        }
+        if with_mp3 {
+            let local_mp3 = cache_dir.join("find_ringtone.mp3");
+            let _ = std::fs::write(&local_mp3, EMBEDDED_FIND_RINGTONE_MP3);
+            let mp3_ok = code_wc == 0 && wc_out.contains(&EMBEDDED_FIND_RINGTONE_MP3.len().to_string());
+            if !mp3_ok {
+                let mp3_str = local_mp3.to_string_lossy().to_string();
+                let _ = self
+                    .run_adb(&["-s", target, "push", &mp3_str, "/data/local/tmp/pico_find_ringtone.mp3"], 8000)
+                    .await;
+            }
+        }
+    }
+
+    pub async fn trigger_find_sound(&self, sn_or_target: &str, active: bool) {
+        let target = self.resolve_target(sn_or_target).await;
+        if target.is_empty() {
+            return;
+        }
+        if active {
+            self.ensure_find_assets_pushed(&target, true).await;
+            let _ = self
+                .run_adb(&["-s", &target, "shell", "input", "keyevent", "224"], 2500)
+                .await;
+            let start_cmd = "kill $(cat /data/local/tmp/pico_find.pid 2>/dev/null) 2>/dev/null; pkill -x PicoFindAudio 2>/dev/null; cmd media_session volume --stream 3 --set 15; cmd notification post -t 'PicoVR-Manager' 'find_tag' '正在查找此头显'; nohup env CLASSPATH=/data/local/tmp/PicoFindAudio.dex app_process /data/local/tmp --nice-name=PicoFindAudio PicoFindAudio /data/local/tmp/pico_find_ringtone.mp3 >/dev/null 2>&1 </dev/null & echo $! > /data/local/tmp/pico_find.pid";
+            let _ = self
+                .run_adb(&["-s", &target, "shell", start_cmd], 4000)
+                .await;
+        } else {
+            let _ = self
+                .run_adb(
+                    &["-s", &target, "shell", "kill $(cat /data/local/tmp/pico_find.pid 2>/dev/null) 2>/dev/null; pkill -x PicoFindAudio 2>/dev/null; rm -f /data/local/tmp/pico_find.pid; cmd notification cancel 'find_tag' 2>/dev/null || true"],
+                    3000,
+                )
+                .await;
+        }
+    }
+
+    pub async fn start_voice_receiver(&self, sn_or_target: &str) -> Option<u16> {
+        let target = self.resolve_target(sn_or_target).await;
+        if target.is_empty() {
+            return None;
+        }
+        self.ensure_find_assets_pushed(&target, false).await;
+        let start_cmd = "kill $(cat /data/local/tmp/pico_voice.pid 2>/dev/null) 2>/dev/null; pkill -x PicoVoicePlay 2>/dev/null; cmd media_session volume --stream 3 --set 14; nohup env CLASSPATH=/data/local/tmp/PicoFindAudio.dex app_process /data/local/tmp --nice-name=PicoVoicePlay PicoVoicePlay 18997 >/dev/null 2>&1 </dev/null & echo $! > /data/local/tmp/pico_voice.pid";
+        let _ = self.run_adb(&["-s", &target, "shell", start_cmd], 4000).await;
+        let (code, _, _) = self
+            .run_adb(&["-s", &target, "forward", "tcp:18997", "tcp:18997"], 3000)
+            .await;
+        if code == 0 {
+            Some(18997)
+        } else {
+            None
+        }
+    }
+
+    pub async fn stop_voice_receiver(&self, sn_or_target: &str) {
+        let target = self.resolve_target(sn_or_target).await;
+        if target.is_empty() {
+            return;
+        }
+        let _ = self
+            .run_adb(
+                &["-s", &target, "shell", "kill $(cat /data/local/tmp/pico_voice.pid 2>/dev/null) 2>/dev/null; pkill -x PicoVoicePlay 2>/dev/null; rm -f /data/local/tmp/pico_voice.pid"],
+                3000,
+            )
+            .await;
+        let _ = self
+            .run_adb(&["-s", &target, "forward", "--remove", "tcp:18997"], 2000)
+            .await;
     }
 
     pub async fn force_stop_all_games(&self, sn_or_target: &str, pkgs: Vec<String>) {

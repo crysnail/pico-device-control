@@ -2,7 +2,7 @@ use crate::models::{PicoDevice, StreamPhase, WsEvent};
 use crate::services::adb_service::AdbService;
 use crate::services::config_service::ConfigService;
 use crate::services::pico_sdk_ffi::{self, MonitorQuality};
-use crate::services::screen_monitor::ScreenMonitorService;
+use crate::services::screen_monitor::{resolve_rtmp_url_from_suite_log, ScreenMonitorService};
 use chrono::Utc;
 use dashmap::DashMap;
 use std::collections::HashSet;
@@ -35,6 +35,10 @@ impl PicoDeviceManager {
             adb_service,
             sdk_active: AtomicBool::new(false),
         }
+    }
+
+    pub fn adb_service(&self) -> &Arc<AdbService> {
+        &self.adb_service
     }
 
     pub fn set_sdk_active(&self, active: bool) {
@@ -302,12 +306,16 @@ impl PicoDeviceManager {
             } else {
                 d.controller_right_battery = battery;
             }
+            if d.online {
+                d.last_seen = Some(Utc::now());
+            }
         });
     }
 
     pub fn update_current_app(&self, sn: &str, app_name: &str) {
         let title = self.get_app_title(app_name);
         self.add_or_update_device(sn, |d| {
+            d.last_seen = Some(Utc::now());
             if Self::is_tracking_lost_app(app_name) {
                 d.tracking_lost = true;
                 d.current_app = app_name.to_string();
@@ -343,6 +351,13 @@ impl PicoDeviceManager {
 
     pub fn update_screen_state(&self, sn: &str, screen_on: bool) {
         self.add_or_update_device(sn, |d| d.screen_on = screen_on);
+    }
+
+    pub fn update_wear_state(&self, sn: &str, is_worn: bool) {
+        self.add_or_update_device(sn, |d| {
+            d.is_worn = is_worn;
+            d.last_seen = Some(Utc::now());
+        });
     }
 
     pub fn update_suite_no(&self, sn: &str, suite_no: &str) {
@@ -516,12 +531,20 @@ impl PicoDeviceManager {
     }
 
     pub fn set_volume(&self, sn: &str, volume: i32) -> i32 {
+        let clamped = volume.clamp(0, 100);
+        self.add_or_update_device(sn, |d| d.volume = clamped as u32);
         self.lock_device(sn);
-        if self.is_sdk_active() {
-            pico_sdk_ffi::set_device_volumn(sn, volume.clamp(0, 100))
+        let ret = if self.is_sdk_active() {
+            pico_sdk_ffi::set_device_volumn(sn, clamped)
         } else {
             0
-        }
+        };
+        let adb = self.adb_service.clone();
+        let sn_owned = sn.to_string();
+        tokio::spawn(async move {
+            adb.set_volume(&sn_owned, clamped).await;
+        });
+        ret
     }
 
     pub fn recenter(&self, sn: &str) -> i32 {
@@ -565,6 +588,8 @@ impl PicoDeviceManager {
 
     pub fn start_monitor(&self, sn: &str) -> i32 {
         let ret = if self.is_sdk_active() {
+            // 先唤醒/点亮头显屏幕，防止息屏休眠导致安卓端编码器不出帧
+            let _ = pico_sdk_ffi::set_screen_state(sn, 1);
             let mut r = pico_sdk_ffi::start_monitor_screen(sn, MonitorQuality::Quality480P);
             tracing::info!("[PICO SDK] StartMonitorScreen({}, Quality480P) -> ret={}", sn, r);
             if r != 0 {
@@ -579,9 +604,29 @@ impl PicoDeviceManager {
                 self.screen_monitor.record_start_requested(
                     sn,
                     0,
-                    "监看指令已下发，等待头显 ByteRTC 推流响应...",
+                    "监看指令已下发，正在建立 RTMP/SDK 视频流通道...",
                     StreamPhase::WaitingFirstFrame,
                 );
+                // 异步解析套件日志中的头显 RTMP 推流地址并用 ffmpeg 桥接实时帧
+                let sm = self.screen_monitor.clone();
+                let sn_owned = sn.to_string();
+                let known_ip = self.get_device(sn).map(|d| d.ip_address).unwrap_or_default();
+                tokio::spawn(async move {
+                    let mut rtmp_url: Option<String> = None;
+                    for _ in 0..8 {
+                        if let Some((url, _ip)) = resolve_rtmp_url_from_suite_log(&sn_owned) {
+                            rtmp_url = Some(url);
+                            break;
+                        }
+                        sleep(Duration::from_millis(350)).await;
+                    }
+                    if rtmp_url.is_none() && !known_ip.is_empty() && known_ip != "127.0.0.1" {
+                        rtmp_url = Some(format!("rtmp://{}:3343/live/cast", known_ip));
+                    }
+                    if let Some(url) = rtmp_url {
+                        sm.start_rtmp_bridge(&sn_owned, &url);
+                    }
+                });
             } else {
                 self.screen_monitor.record_start_requested(
                     sn,
@@ -606,6 +651,7 @@ impl PicoDeviceManager {
     }
 
     pub fn stop_monitor(&self, sn: &str) -> i32 {
+        self.screen_monitor.stop_rtmp_bridge(sn);
         let ret = if self.is_sdk_active() {
             let r = pico_sdk_ffi::stop_monitor_screen(sn);
             let _ = pico_sdk_ffi::stop_monitor(sn);
@@ -707,14 +753,55 @@ impl PicoDeviceManager {
         count
     }
 
-    pub async fn find_device(&self, sn: &str) -> i32 {
+    pub async fn find_device(&self, sn: &str, active: bool) -> i32 {
         let mut ret = 0;
+        let prev_vol = self.get_device(sn).map(|d| d.volume as i32).unwrap_or(70);
         if self.is_sdk_active() {
-            let _ = pico_sdk_ffi::set_screen_state(sn, 1);
-            ret = pico_sdk_ffi::device_control_json(sn, r#"{"action":"findDevice"}"#);
+            if active {
+                let _ = pico_sdk_ffi::set_screen_state(sn, 1);
+                let _ = pico_sdk_ffi::set_device_volumn(sn, 100);
+                ret = pico_sdk_ffi::device_control_json(sn, r#"{"action":"findDevice"}"#);
+            } else {
+                let _ = pico_sdk_ffi::set_device_volumn(sn, prev_vol);
+                ret = pico_sdk_ffi::device_control_json(sn, r#"{"action":"stopFindDevice"}"#);
+            }
         }
-        self.adb_service.set_screen_state(sn, true).await;
-        self.update_screen_state(sn, true);
+        // 自动从套件日志解析头显 IP 并按需建立无线 ADB 连接，确保声音提示生效
+        if let Some((_, ip)) = resolve_rtmp_url_from_suite_log(sn) {
+            let _ = self.adb_service.ensure_connected_by_ip(&ip, 5555).await;
+        }
+        self.adb_service.trigger_find_sound(sn, active).await;
+        self.add_or_update_device(sn, |d| {
+            d.is_finding = active;
+            if active {
+                d.screen_on = true;
+            }
+        });
+        ret
+    }
+
+    pub async fn set_voice_call(&self, sn: &str, active: bool) -> i32 {
+        let ret = if self.is_sdk_active() {
+            let payload = if active {
+                r#"{"action":"startAudioCall"}"#
+            } else {
+                r#"{"action":"stopAudioCall"}"#
+            };
+            pico_sdk_ffi::device_control_json(sn, payload)
+        } else {
+            0
+        };
+        if let Some((_, ip)) = resolve_rtmp_url_from_suite_log(sn) {
+            let _ = self.adb_service.ensure_connected_by_ip(&ip, 5555).await;
+        }
+        if active {
+            let _ = self.adb_service.start_voice_receiver(sn).await;
+        } else {
+            self.adb_service.stop_voice_receiver(sn).await;
+        }
+        self.add_or_update_device(sn, |d| {
+            d.is_in_voice_call = active;
+        });
         ret
     }
 
@@ -731,7 +818,7 @@ impl PicoDeviceManager {
     pub async fn batch_find(&self, sn_list: &[String]) -> usize {
         let mut count = 0;
         for sn in sn_list {
-            self.find_device(sn).await;
+            self.find_device(sn, true).await;
             count += 1;
             sleep(Duration::from_millis(40)).await;
         }

@@ -13,16 +13,10 @@ impl ConfigService {
         let config_path = Self::resolve_config_path();
         let loaded = Self::load_from_disk(&config_path);
 
-        let service = Self {
+        Self {
             config_path,
             config: RwLock::new(loaded),
-        };
-
-        if !service.config_path.exists() {
-            let _ = service.save();
         }
-
-        service
     }
 
     /// 优先级：可执行文件同目录 config.json > 当前工作目录 config.json > 默认在可执行文件同目录创建

@@ -49,6 +49,8 @@ pub struct AppProject {
     pub duration_minutes: i32,
     #[serde(default = "default_icon", alias = "Icon")]
     pub icon: String,
+    #[serde(default, alias = "BannerUrl")]
+    pub banner_url: String,
     #[serde(default, alias = "ExtraJson")]
     pub extra_json: String,
 }
@@ -108,6 +110,7 @@ impl Default for SystemConfig {
                     package_name: "com.vr.ocean".into(),
                     duration_minutes: 12,
                     icon: "🐋".into(),
+                    banner_url: String::new(),
                     extra_json: String::new(),
                 },
                 AppProject {
@@ -117,6 +120,7 @@ impl Default for SystemConfig {
                     package_name: "com.vr.dino".into(),
                     duration_minutes: 10,
                     icon: "🦖".into(),
+                    banner_url: String::new(),
                     extra_json: String::new(),
                 },
                 AppProject {
@@ -126,6 +130,7 @@ impl Default for SystemConfig {
                     package_name: "com.pico.vrplayer".into(),
                     duration_minutes: 20,
                     icon: "🎬".into(),
+                    banner_url: String::new(),
                     extra_json: String::new(),
                 },
             ],
@@ -155,6 +160,9 @@ pub struct PicoDevice {
     pub app_title: String,
     pub tracking_lost: bool,
     pub is_streaming: bool,
+    pub volume: u32,
+    pub is_finding: bool,
+    pub is_in_voice_call: bool,
     pub ip_address: String,
     pub last_seen: Option<DateTime<Utc>>,
     pub is_demo: bool,
@@ -180,6 +188,9 @@ impl PicoDevice {
             app_title: "系统桌面".to_string(),
             tracking_lost: false,
             is_streaming: false,
+            volume: 70,
+            is_finding: false,
+            is_in_voice_call: false,
             ip_address: "127.0.0.1".to_string(),
             last_seen: None,
             is_demo: false,

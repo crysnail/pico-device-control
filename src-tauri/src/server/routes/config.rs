@@ -19,6 +19,7 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/config", get(get_config))
         .route("/api/config/projects", post(save_project))
+        .route("/api/config/projects/reorder", post(reorder_projects))
         .route("/api/config/projects/{id}", delete(delete_project))
         .route("/api/config/groups", post(save_group))
         .route("/api/config/groups/{id}", delete(delete_group))
@@ -60,6 +61,31 @@ async fn save_project(
         }
     });
     (StatusCode::OK, Json(json!({ "success": true, "project": project })))
+}
+
+#[derive(serde::Deserialize)]
+struct ReorderProjectsRequest {
+    ids: Vec<String>,
+}
+
+async fn reorder_projects(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ReorderProjectsRequest>,
+) -> impl IntoResponse {
+    if req.ids.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "success": false, "message": "排序列表不能为空" })));
+    }
+    let _ = state.config_service.update_config(|cfg| {
+        let mut reordered = Vec::with_capacity(cfg.projects.len());
+        for id in &req.ids {
+            if let Some(pos) = cfg.projects.iter().position(|p| &p.id == id) {
+                reordered.push(cfg.projects.remove(pos));
+            }
+        }
+        reordered.append(&mut cfg.projects);
+        cfg.projects = reordered;
+    });
+    (StatusCode::OK, Json(json!({ "success": true })))
 }
 
 async fn delete_project(

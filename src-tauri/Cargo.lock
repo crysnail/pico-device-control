@@ -3,6 +3,37 @@
 version = 4
 
 [[package]]
+name = "PicoVR-Manager"
+version = "2.0.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "chrono",
+ "dashmap",
+ "dirs 5.0.1",
+ "futures-util",
+ "if-addrs",
+ "image",
+ "libloading 0.8.9",
+ "mime_guess",
+ "regex",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-opener",
+ "tokio",
+ "tokio-stream",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zip",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2900,37 +2931,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6fd9027e2d9319be6349febd1db4e8d02aa544921200c9b777720ac34a3aa89"
 dependencies = [
  "siphasher",
-]
-
-[[package]]
-name = "pico-manager-desktop"
-version = "2.0.0"
-dependencies = [
- "axum",
- "bytes",
- "chrono",
- "dashmap",
- "dirs 5.0.1",
- "futures-util",
- "if-addrs",
- "image",
- "libloading 0.8.9",
- "mime_guess",
- "regex",
- "rust-embed",
- "serde",
- "serde_json",
- "sysinfo",
- "tauri",
- "tauri-build",
- "tauri-plugin-opener",
- "tokio",
- "tokio-stream",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "zip",
 ]
 
 [[package]]

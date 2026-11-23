@@ -1,15 +1,17 @@
 use crate::services::screen_monitor::ScreenMonitorService;
 use crate::state::AppState;
 use axum::body::Body;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
-use futures_util::stream;
+use futures_util::{stream, SinkExt, StreamExt};
 use serde_json::json;
 use std::sync::Arc;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::time::{timeout, Duration};
 
 pub fn router() -> Router<Arc<AppState>> {
@@ -21,6 +23,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/stream/{sn}/frame", get(get_frame))
         .route("/api/stream/{sn}/status", get(get_stream_status))
         .route("/api/stream/{sn}/mjpeg", get(get_mjpeg_stream))
+        .route("/ws/stream/{sn}", get(ws_stream_handler))
+        .route("/ws/voice/{sn}", get(ws_voice_handler))
 }
 
 async fn get_suite_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -162,4 +166,96 @@ async fn get_mjpeg_stream(
         HeaderValue::from_static("no-cache, private, no-store, must-revalidate"),
     );
     (StatusCode::OK, headers, Body::from_stream(body_stream))
+}
+
+async fn ws_stream_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    Path(sn): Path<String>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_ws_stream(socket, state, sn))
+}
+
+async fn handle_ws_stream(socket: WebSocket, state: Arc<AppState>, sn: String) {
+    let (mut sender, mut receiver) = socket.split();
+    let mut rx = state.screen_monitor.subscribe(&sn);
+
+    if let Some(latest) = state.screen_monitor.get_latest_frame(&sn) {
+        if !latest.is_empty() {
+            let _ = sender.send(Message::Binary(latest.to_vec().into())).await;
+        }
+    }
+
+    let send_task = tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(frame) => {
+                    if sender.send(Message::Binary(frame.to_vec().into())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => break,
+            }
+        }
+    });
+
+    while let Some(msg) = receiver.next().await {
+        match msg {
+            Ok(Message::Close(_)) | Err(_) => break,
+            _ => {}
+        }
+    }
+
+    send_task.abort();
+}
+
+async fn ws_voice_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    Path(sn): Path<String>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_ws_voice(socket, state, sn))
+}
+
+async fn handle_ws_voice(socket: WebSocket, state: Arc<AppState>, sn: String) {
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpStream;
+
+    let (_, mut receiver) = socket.split();
+    let adb = state.device_manager.adb_service().clone();
+    let port_opt = adb.start_voice_receiver(&sn).await;
+    let Some(port) = port_opt else {
+        return;
+    };
+
+    // 等待头显端 PicoVoicePlay ServerSocket 就绪后建立本地转发 TCP 连接
+    let mut tcp_opt = None;
+    for _ in 0..8 {
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        if let Ok(stream) = TcpStream::connect(format!("127.0.0.1:{}", port)).await {
+            let _ = stream.set_nodelay(true);
+            tcp_opt = Some(stream);
+            break;
+        }
+    }
+    let Some(mut tcp) = tcp_opt else {
+        adb.stop_voice_receiver(&sn).await;
+        return;
+    };
+
+    while let Some(msg) = receiver.next().await {
+        match msg {
+            Ok(Message::Binary(pcm)) => {
+                if tcp.write_all(&pcm).await.is_err() {
+                    break;
+                }
+            }
+            Ok(Message::Close(_)) | Err(_) => break,
+            _ => {}
+        }
+    }
+
+    let _ = tcp.shutdown().await;
+    adb.stop_voice_receiver(&sn).await;
 }

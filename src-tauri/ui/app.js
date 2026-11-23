@@ -7,15 +7,34 @@ const IS_TAURI_ENV = (
   Boolean(window.__TAURI__)
 );
 
+const IS_ANDROID_REMOTE = (
+  new URLSearchParams(window.location.search).get('client') === 'android' ||
+  Boolean(window.__PICO_ANDROID_REMOTE__)
+);
+
 let LOCAL_PORT = 8999;
-let RUNTIME_PORT = 8999;
-let CONN_MODE = 'local'; // 'local' | 'remote'
-let REMOTE_HOST = '';
-let REMOTE_PORT = 8999;
+let RUNTIME_PORT = IS_ANDROID_REMOTE ? (parseInt(window.location.port, 10) || 8999) : 8999;
+let CONN_MODE = IS_ANDROID_REMOTE ? 'remote' : 'local'; // 'local' | 'remote'
+let REMOTE_HOST = IS_ANDROID_REMOTE ? window.location.hostname : '';
+let REMOTE_PORT = IS_ANDROID_REMOTE ? (parseInt(window.location.port, 10) || 8999) : 8999;
 let API_BASE = IS_TAURI_ENV ? `http://127.0.0.1:${LOCAL_PORT}` : '';
 let PRIMARY_LAN_URL = '';
 
+if (IS_ANDROID_REMOTE) {
+  document.documentElement.classList.add('android-client');
+  if (document.body) document.body.classList.add('android-client');
+}
+
 function updateConnectionBase() {
+  if (IS_ANDROID_REMOTE) {
+    CONN_MODE = 'remote';
+    REMOTE_HOST = window.location.hostname;
+    REMOTE_PORT = parseInt(window.location.port, 10) || 8999;
+    RUNTIME_PORT = REMOTE_PORT;
+    API_BASE = '';
+    updateConnModeUi();
+    return;
+  }
   if (CONN_MODE === 'remote' && REMOTE_HOST) {
     RUNTIME_PORT = REMOTE_PORT || 8999;
     API_BASE = `http://${REMOTE_HOST}:${RUNTIME_PORT}`;
@@ -195,6 +214,7 @@ function cycleWallpaper() {
 let currentThemeMode = localStorage.getItem('pico-theme-mode') || localStorage.getItem('pico-theme') || 'dark';
 let currentUiScale = parseFloat(localStorage.getItem('pico-ui-scale') || '1.0') || 1.0;
 let currentFontScale = parseFloat(localStorage.getItem('pico-font-scale') || '1.0') || 1.0;
+let currentMatrixScale = parseFloat(localStorage.getItem('pico-matrix-scale') || '1.0') || 1.0;
 
 function initTheme() {
   applyThemeMode(currentThemeMode, false);
@@ -235,6 +255,7 @@ function toggleTheme() {
 function initDisplayScale() {
   setUiScale(currentUiScale, false);
   setFontScale(currentFontScale, false);
+  setMatrixScale(currentMatrixScale, false);
 }
 
 function openDisplaySettingsModal() {
@@ -251,8 +272,15 @@ function setUiScale(scale, save = true) {
   document.documentElement.style.zoom = '';
   const topbar = document.querySelector('.topbar');
   const workspace = document.querySelector('.workspace');
-  if (topbar) topbar.style.zoom = String(currentUiScale);
-  if (workspace) workspace.style.zoom = String(currentUiScale);
+  if (topbar) {
+    topbar.style.zoom = String(currentUiScale);
+    topbar.style.inlineSize = '';
+  }
+  if (workspace) {
+    workspace.style.zoom = String(currentUiScale);
+    workspace.style.inlineSize = '';
+    workspace.style.maxInlineSize = '';
+  }
   updateScaleControlsUI();
 }
 
@@ -271,6 +299,19 @@ function setFontScale(scale, save = true) {
 
 function onFontScaleSliderInput(val) {
   setFontScale(parseInt(val, 10) / 100, true);
+}
+
+function setMatrixScale(scale, save = true) {
+  const num = parseFloat(scale);
+  if (!Number.isFinite(num)) return;
+  currentMatrixScale = Math.min(Math.max(num, 0.6), 1.3);
+  if (save) localStorage.setItem('pico-matrix-scale', String(currentMatrixScale));
+  document.documentElement.style.setProperty('--matrix-scale', String(currentMatrixScale));
+  updateScaleControlsUI();
+}
+
+function onMatrixScaleSliderInput(val) {
+  setMatrixScale(parseInt(val, 10) / 100, true);
 }
 
 function updateScaleControlsUI() {
@@ -293,6 +334,12 @@ function updateScaleControlsUI() {
     else fontDisplay.textContent = `特大 (${fontPct}%)`;
   }
 
+  const matPct = Math.round(currentMatrixScale * 100);
+  const matSlider = document.getElementById('matrix-scale-slider');
+  const matDisplay = document.getElementById('matrix-scale-display');
+  if (matSlider) matSlider.value = String(matPct);
+  if (matDisplay) matDisplay.textContent = `${matPct}%`;
+
   ['system', 'light', 'dark'].forEach((m) => {
     const el = document.getElementById(`theme-opt-${m}`);
     if (el) el.classList.toggle('btn--primary', currentThemeMode === m);
@@ -308,7 +355,11 @@ function closeModalById(id) {
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    ['confirm-modal', 'alias-modal', 'suite-diag-modal', 'ota-modal', 'group-modal', 'adb-modal', 'config-modal', 'conn-mode-modal', 'display-settings-modal']
+    if (isMonitorFullscreen) {
+      toggleMonitorFullscreen();
+      return;
+    }
+    ['confirm-modal', 'alias-modal', 'suite-diag-modal', 'ota-modal', 'group-modal', 'adb-modal', 'config-modal', 'conn-mode-modal', 'display-settings-modal', 'close-confirm-modal']
       .forEach((id) => closeModalById(id));
   }
 });
@@ -338,6 +389,7 @@ document.addEventListener('click', (e) => {
     case 'openDisplaySettingsModal': openDisplaySettingsModal(); break;
     case 'setUiScale': setUiScale(arg); break;
     case 'setFontScale': setFontScale(arg); break;
+    case 'setMatrixScale': setMatrixScale(arg); break;
     case 'applyThemeMode': applyThemeMode(arg); break;
     case 'toggleTheme': toggleTheme(); break;
     case 'openAdbModal': openAdbModal(); break;
@@ -418,12 +470,28 @@ document.addEventListener('click', (e) => {
     case 'openNewGroupForm': openNewGroupForm(); break;
     case 'editGroup': editGroup(arg); break;
     case 'deleteGroup': deleteGroup(arg); break;
+    case 'selectGroupDevicesInMatrix': selectGroupDevicesInMatrix(arg); break;
     case 'cancelGroupForm': cancelGroupForm(); break;
     case 'saveGroupFromForm': saveGroupFromForm(); break;
     case 'toggleAllGroupDevices': toggleAllGroupDevices(arg === 'true'); break;
+    case 'checkFirewallStatus': checkFirewallStatus(); break;
+    case 'setupFirewallAndNetwork': setupFirewallAndNetwork(); break;
+    case 'selectProjectEmoji': selectProjectEmoji(arg); break;
+    case 'selectEmojiCategory': selectEmojiCategory(arg); break;
+    case 'selectProjectBanner': selectProjectBanner(arg); break;
+    case 'moveProject': moveProject(arg, parseInt(arg2, 10)); break;
+    case 'confirmAppClose': confirmAppClose(arg); break;
+    case 'setMonitorGridMode': setMonitorGridMode(parseInt(arg, 10)); break;
+    case 'startTileStream': startTileStream(arg); break;
+    case 'toggleMonitorFullscreen': toggleMonitorFullscreen(); break;
+    case 'removeMonitorSlot': removeMonitorSlot(arg); break;
+    case 'minimizeWindow': invokeWindowCmd('minimize_window'); break;
+    case 'toggleMaximizeWindow': invokeWindowCmd('toggle_maximize_window'); break;
+    case 'requestCloseWindow': document.getElementById('close-confirm-modal')?.classList.remove('hidden'); break;
     case 'reconnectSuiteSdk': reconnectSuiteSdk(); break;
     case 'toggleDeviceSelect': toggleDeviceSelect(arg); break;
     case 'selectMonitorDevice': selectMonitorDevice(arg); break;
+    case 'startMonitorForDevice': startMonitorForDevice(arg); break;
     default: break;
   }
 });
@@ -438,6 +506,7 @@ document.addEventListener('change', (e) => {
     case 'saveDeviceProject': saveDeviceProject(el.dataset.arg || '', el.value); break;
     case 'updateDeploySelectedCount': updateDeploySelectedCount(); break;
     case 'toggleAllAdbSyncSelect': toggleAllAdbSyncSelect(el.checked); break;
+    case 'onProjectBannerFileChange': onProjectBannerFileChange(el); break;
     case 'selectDeployUninstallPkg':
       if (el.value) {
         const input = document.getElementById('deploy-uninstall-pkg');
@@ -457,6 +526,10 @@ document.addEventListener('input', (e) => {
     case 'updateTestUdpPreview': updateTestUdpPreview(); break;
     case 'onUiScaleSliderInput': onUiScaleSliderInput(el.value); break;
     case 'onFontScaleSliderInput': onFontScaleSliderInput(el.value); break;
+    case 'onMatrixScaleSliderInput': onMatrixScaleSliderInput(el.value); break;
+    case 'onProjectBannerUrlInput': updateBannerPresetHighlight(el.value); break;
+    case 'filterGroupDevicePills': filterGroupDevicePills(el.value); break;
+    case 'onEmojiSearchInput': onEmojiSearchInput(el.value); break;
     default: break;
   }
 });
@@ -514,6 +587,17 @@ function showToast(msg, icon = '✓') {
 // ======================== 初始化 ========================
 async function resolveRuntimeConfig() {
   if (IS_TAURI_ENV) {
+    document.body.classList.add('tauri-desktop');
+    document.getElementById('window-controls')?.classList.remove('hidden');
+    initFramelessTopbarDrag();
+    try {
+      const listen = window.__TAURI__?.event?.listen;
+      if (typeof listen === 'function') {
+        listen('app-close-requested', () => {
+          document.getElementById('close-confirm-modal')?.classList.remove('hidden');
+        });
+      }
+    } catch { }
     try {
       const invoke = window.__TAURI__?.core?.invoke;
       if (typeof invoke === 'function') {
@@ -552,6 +636,49 @@ async function resolveRuntimeConfig() {
       }
     }
   } catch { }
+}
+
+async function invokeWindowCmd(cmd) {
+  try {
+    const invoke = window.__TAURI__?.core?.invoke;
+    if (typeof invoke === 'function') await invoke(cmd);
+  } catch { }
+}
+
+function initFramelessTopbarDrag() {
+  const topbar = document.querySelector('.topbar');
+  if (!topbar || topbar.dataset.dragBound === '1') return;
+  topbar.dataset.dragBound = '1';
+  const clearDragging = () => {
+    document.body.classList.remove('is-window-dragging');
+  };
+  topbar.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest('button, input, select, a, .status-pill, .kpi-chip, .win-ctrl-group')) return;
+    document.body.classList.add('is-window-dragging');
+    invokeWindowCmd('start_dragging_window').finally(clearDragging);
+  });
+  window.addEventListener('mouseup', clearDragging);
+  window.addEventListener('blur', clearDragging);
+  topbar.addEventListener('dblclick', (e) => {
+    if (e.target.closest('button, input, select, a, .status-pill, .kpi-chip, .win-ctrl-group')) return;
+    invokeWindowCmd('toggle_maximize_window');
+  });
+}
+
+async function confirmAppClose(mode) {
+  closeModalById('close-confirm-modal');
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (typeof invoke !== 'function') return;
+  try {
+    if (mode === 'exit') {
+      await invoke('exit_application');
+    } else {
+      await invoke('hide_main_window');
+    }
+  } catch (e) {
+    console.error('confirmAppClose error:', e);
+  }
 }
 
 function openConnModeModal() {
@@ -727,6 +854,7 @@ function initRealtimeSocket() {
             renderMatrix();
             updateTopStats();
             if (currentMonitorSn === dev.sn) refreshMonitorTelemetry(dev);
+            else if (selectedSns.size === 1 && selectedSns.has(dev.sn)) syncVolumeSliderFromDevice(dev);
           }
         } else if (msg.type === 'DeviceRemoved') {
           const sn = msg.data;
@@ -804,6 +932,8 @@ async function loadDevices() {
   }
 }
 
+let draggingProjectId = null;
+
 function renderProjects() {
   const container = document.getElementById('project-cards-container');
   if (!container) return;
@@ -817,16 +947,41 @@ function renderProjects() {
   projects.forEach(proj => {
     const isActive = currentProject && currentProject.id === proj.id;
     const wp = matchWallpaperForProject(proj);
+    const bgUrl = proj.bannerUrl || wp.url;
     const card = document.createElement('div');
     card.className = `project-card${isActive ? ' project-card--active' : ''}`;
+    card.draggable = true;
+    card.dataset.projectId = proj.id;
     card.onclick = () => {
       currentProject = proj;
       playSound('click');
-      setWallpaperByUrl(wp.url);
+      setWallpaperByUrl(bgUrl);
       renderProjects();
     };
+    card.addEventListener('dragstart', (e) => {
+      draggingProjectId = proj.id;
+      card.classList.add('project-card--dragging');
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+    });
+    card.addEventListener('dragend', () => {
+      draggingProjectId = null;
+      card.classList.remove('project-card--dragging');
+      container.querySelectorAll('.project-card--drag-over').forEach(el => el.classList.remove('project-card--drag-over'));
+    });
+    card.addEventListener('dragover', (e) => {
+      if (!draggingProjectId || draggingProjectId === proj.id) return;
+      e.preventDefault();
+      card.classList.add('project-card--drag-over');
+    });
+    card.addEventListener('dragleave', () => card.classList.remove('project-card--drag-over'));
+    card.addEventListener('drop', (e) => {
+      e.preventDefault();
+      card.classList.remove('project-card--drag-over');
+      if (!draggingProjectId || draggingProjectId === proj.id) return;
+      reorderProjectsByIds(draggingProjectId, proj.id);
+    });
     card.innerHTML = `
-      <div class="project-card__bg" style="background-image: url('${wp.url}')"></div>
+      <div class="project-card__bg" style="background-image: url('${escapeHtml(bgUrl)}')"></div>
       <div class="project-card__scrim"></div>
       <div class="project-card__top">
         <span class="project-card__icon">${escapeHtml(proj.icon || '🎮')}</span>
@@ -958,9 +1113,9 @@ function renderMatrix() {
     const card = document.createElement('div');
     card.className = [
       'device-card',
+      dev.online ? (isLow || dev.trackingLost ? 'device-card--low' : (isRunning ? 'device-card--running' : 'device-card--idle')) : 'device-card--offline',
       isSelected ? 'device-card--selected' : '',
-      isMonitoring ? 'device-card--monitoring' : '',
-      !dev.online ? 'device-card--offline' : ''
+      isMonitoring ? 'device-card--monitoring' : ''
     ].filter(Boolean).join(' ');
     card.dataset.action = 'toggleDeviceSelect';
     card.dataset.arg = dev.sn;
@@ -980,12 +1135,17 @@ function renderMatrix() {
         ${dev.trackingLost ? '⚠️ 大空间定位丢失' : (isRunning ? `🎮 ${escapeHtml(dev.appTitle || dev.currentApp)}` : '🏠 系统桌面')}
       </div>
 
+      <div class="device-card__ctrl">
+        <span>手柄 L ${dev.online ? `${dev.controllerLeftBattery ?? '--'}%` : '--'} · R ${dev.online ? `${dev.controllerRightBattery ?? '--'}%` : '--'}</span>
+        <span>${dev.online ? (dev.isCharging ? '⚡充电中' : (dev.locked ? '🔒已锁' : '')) : ''}</span>
+      </div>
+
       <div class="device-card__foot">
         <div class="battery-bar">
           <span class="mono ${isLow ? 'text-rose' : 'text-secondary'}">${dev.online ? `${batPct}%` : '--'}</span>
           <div class="battery-track"><div class="battery-fill ${batClass}" style="inline-size: ${batPct}%"></div></div>
         </div>
-        <button type="button" class="btn btn--xs" data-action="selectMonitorDevice" data-arg="${escapeHtml(dev.sn)}" data-stop="1" title="在右侧查看实时画面与详情">👁 监看</button>
+        <button type="button" class="btn btn--xs" data-action="startMonitorForDevice" data-arg="${escapeHtml(dev.sn)}" data-stop="1" title="在右侧开启并查看实时画面">👁 监看</button>
       </div>
     `;
     matrix.appendChild(card);
@@ -998,6 +1158,10 @@ function toggleDeviceSelect(sn) {
   if (!sn) return;
   if (selectedSns.has(sn)) selectedSns.delete(sn);
   else selectedSns.add(sn);
+  if (selectedSns.has(sn)) {
+    const dev = devices.get(sn);
+    if (dev) syncVolumeSliderFromDevice(dev);
+  }
   playSound('click');
   renderMatrix();
 }
@@ -1071,20 +1235,240 @@ function clearSelection() {
   renderMatrix();
 }
 
-// ======================== 右侧监看与遥测 ========================
-function selectMonitorDevice(sn) {
-  if (isStreamingActive && currentMonitorSn && currentMonitorSn !== sn) {
-    stopLiveStreamInternal(currentMonitorSn);
+// ======================== 右侧监看与遥测（支持多宫格与全屏） ========================
+let monitorGridMode = 1;
+let isMonitorFullscreen = false;
+let monitorSlots = [];
+const activeStreamingSns = new Set();
+const findingSns = new Set();
+const voiceCallSns = new Set();
+let wallPollTimer = null;
+
+function ensureMonitorSlot(sn) {
+  if (!sn) return;
+  if (!monitorSlots.includes(sn)) {
+    const limit = monitorGridMode === 1 ? 1 : monitorGridMode;
+    if (monitorGridMode === 1) {
+      monitorSlots = [sn];
+    } else {
+      if (monitorSlots.length >= limit) monitorSlots.shift();
+      monitorSlots.push(sn);
+    }
   }
+}
+
+function startMonitorForDevice(sn) {
+  selectMonitorDevice(sn);
+  const dev = devices.get(sn);
+  if (!dev || !dev.online) {
+    showToast('当前头显离线，无法开启实时画面监控', '⚠️');
+    return;
+  }
+  if (!activeStreamingSns.has(sn)) {
+    toggleLiveStream();
+  }
+}
+
+function selectMonitorDevice(sn) {
   currentMonitorSn = sn;
+  ensureMonitorSlot(sn);
   const dev = devices.get(sn);
   if (dev) refreshMonitorTelemetry(dev);
+
+  if (monitorGridMode === 1) {
+    if (activeStreamingSns.has(sn)) {
+      isStreamingActive = true;
+      document.getElementById('stream-standby-overlay')?.classList.add('hidden');
+      document.getElementById('stream-live-bar')?.classList.remove('hidden');
+      document.getElementById('side-monitor-canvas')?.classList.add('hidden');
+      const streamImg = document.getElementById('side-monitor-img');
+      if (streamImg) {
+        streamImg.classList.remove('hidden');
+        startSnapshotStream(sn);
+      }
+      startStreamStatusPolling(sn);
+    } else {
+      isStreamingActive = false;
+      stopStreamStatusPolling();
+      if (snapshotTimer) { clearInterval(snapshotTimer); snapshotTimer = null; }
+      const streamImg = document.getElementById('side-monitor-img');
+      if (streamImg) { streamImg.src = ''; streamImg.classList.add('hidden'); }
+      document.getElementById('stream-live-bar')?.classList.add('hidden');
+      document.getElementById('stream-standby-overlay')?.classList.remove('hidden');
+      document.getElementById('side-monitor-canvas')?.classList.remove('hidden');
+      safeSetText('monitor-fps-indicator', '--');
+    }
+  } else {
+    renderMonitorWall();
+  }
   renderMatrix();
+}
+
+function setMonitorGridMode(mode) {
+  monitorGridMode = [1, 2, 4, 9].includes(mode) ? mode : 1;
+  [1, 2, 4, 9].forEach(m => {
+    const btn = document.getElementById(`grid-btn-${m}`);
+    if (btn) btn.classList.toggle('btn--primary', m === monitorGridMode);
+  });
+  const singleVp = document.getElementById('single-monitor-viewport');
+  const sideWall = document.getElementById('side-monitor-wall');
+  if (monitorGridMode === 1 && !isMonitorFullscreen) {
+    stopAllWallWsStreams();
+    singleVp?.classList.remove('hidden');
+    sideWall?.classList.add('hidden');
+    safeSetText('monitor-active-slots-badge', '单机视图');
+    if (currentMonitorSn) selectMonitorDevice(currentMonitorSn);
+  } else {
+    singleVp?.classList.add('hidden');
+    if (!isMonitorFullscreen) sideWall?.classList.remove('hidden');
+    // 自动填充已在线/已推流头显到宫格
+    const candidates = [
+      ...Array.from(activeStreamingSns),
+      ...(currentMonitorSn ? [currentMonitorSn] : []),
+      ...Array.from(devices.values()).filter(d => d.online).map(d => d.sn)
+    ];
+    monitorSlots = [];
+    for (const sn of candidates) {
+      if (!monitorSlots.includes(sn)) monitorSlots.push(sn);
+      if (monitorSlots.length >= monitorGridMode) break;
+    }
+    safeSetText('monitor-active-slots-badge', `${monitorGridMode}宫格 (${monitorSlots.length}路)`);
+    renderMonitorWall();
+  }
+}
+
+function removeMonitorSlot(sn) {
+  monitorSlots = monitorSlots.filter(x => x !== sn);
+  if (activeStreamingSns.has(sn)) {
+    activeStreamingSns.delete(sn);
+    fetch(`/api/stream/${encodeURIComponent(sn)}/stop`, { method: 'POST' }).catch(() => {});
+  }
+  renderMonitorWall();
+}
+
+function toggleMonitorFullscreen() {
+  isMonitorFullscreen = !isMonitorFullscreen;
+  const fsModal = document.getElementById('monitor-fullscreen-modal');
+  fsModal?.classList.toggle('hidden', !isMonitorFullscreen);
+  if (isMonitorFullscreen) {
+    if (monitorSlots.length === 0 && currentMonitorSn) ensureMonitorSlot(currentMonitorSn);
+    renderMonitorWall();
+  } else {
+    setMonitorGridMode(monitorGridMode);
+  }
+}
+
+function renderMonitorWall() {
+  const targets = [
+    document.getElementById('side-monitor-wall'),
+    isMonitorFullscreen ? document.getElementById('fs-monitor-wall') : null
+  ].filter(Boolean);
+
+  const clsMode = monitorGridMode <= 1 ? 1 : monitorGridMode;
+  targets.forEach(wall => {
+    wall.className = `monitor-wall monitor-wall--${clsMode}${(!isMonitorFullscreen && monitorGridMode === 1) ? ' hidden' : ''}`;
+    if (monitorSlots.length === 0) {
+      wall.innerHTML = '<div class="panel-sub" style="grid-column: 1 / -1; display:flex; align-items:center; justify-content:center;">点击左侧机位卡片中的「👁 监看」加入画面宫格</div>';
+      return;
+    }
+    wall.innerHTML = monitorSlots.map(sn => {
+      const dev = devices.get(sn);
+      const name = dev ? dev.displayName : sn.slice(-6);
+      const isCur = currentMonitorSn === sn;
+      const isLive = activeStreamingSns.has(sn);
+      return `
+        <div class="monitor-tile${isCur ? ' monitor-tile--active' : ''}" data-action="selectMonitorDevice" data-arg="${escapeHtml(sn)}">
+          <img data-wall-sn="${escapeHtml(sn)}" alt="${escapeHtml(name)}">
+          ${!isLive ? `<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:rgba(15,23,42,0.55);"><span style="font-size:0.75rem;color:#94a3b8;">未开启推流</span><button type="button" class="btn btn--xs btn--primary" data-action="startTileStream" data-arg="${escapeHtml(sn)}" data-stop="1">▶ 开启推流</button></div>` : ''}
+          <div class="monitor-tile__hud">
+            <span>${isLive ? '🟢' : '⚪'} ${escapeHtml(name)}</span>
+            <button type="button" class="monitor-tile__close" data-action="removeMonitorSlot" data-arg="${escapeHtml(sn)}" data-stop="1" title="停止并移除此画面">✕</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+  });
+
+  // 仅同步已在推流中的头显 WebSocket 画面，绝不自动拉起未启动推流的头显
+  syncWallWsStreams();
+}
+
+const wallWsSockets = new Map();
+
+async function startTileStream(sn) {
+  if (!sn) return;
+  const dev = devices.get(sn);
+  if (!dev || !dev.online) {
+    showToast('当前头显离线，无法开启推流', '⚠️');
+    return;
+  }
+  activeStreamingSns.add(sn);
+  await fetch(`/api/stream/${encodeURIComponent(sn)}/start`, { method: 'POST' }).catch(() => {});
+  renderMonitorWall();
+}
+
+function stopAllWallWsStreams() {
+  for (const [sn, ws] of wallWsSockets.entries()) {
+    try { ws.close(); } catch { }
+    wallWsSockets.delete(sn);
+  }
+}
+
+function syncWallWsStreams() {
+  if (monitorGridMode === 1 && !isMonitorFullscreen) {
+    stopAllWallWsStreams();
+    if (wallPollTimer) { clearInterval(wallPollTimer); wallPollTimer = null; }
+    return;
+  }
+  const needed = new Set(monitorSlots.filter(sn => activeStreamingSns.has(sn)));
+  for (const [sn, ws] of wallWsSockets.entries()) {
+    if (!needed.has(sn)) {
+      try { ws.close(); } catch { }
+      wallWsSockets.delete(sn);
+    }
+  }
+  for (const sn of needed) {
+    if (wallWsSockets.has(sn)) continue;
+    try {
+      const ws = new WebSocket(wsUrl(`/ws/stream/${encodeURIComponent(sn)}`));
+      ws.binaryType = 'blob';
+      wallWsSockets.set(sn, ws);
+      ws.onmessage = (ev) => {
+        if (!(ev.data instanceof Blob) || ev.data.size === 0) return;
+        const url = URL.createObjectURL(ev.data);
+        const imgs = Array.from(document.querySelectorAll(`img[data-wall-sn="${CSS.escape(sn)}"]`));
+        if (imgs.length === 0) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        imgs.forEach((img, idx) => {
+          const old = img.dataset.blobUrl;
+          img.onload = () => {
+            if (old) URL.revokeObjectURL(old);
+            if (idx === imgs.length - 1) setTimeout(() => URL.revokeObjectURL(url), 500);
+          };
+          img.dataset.blobUrl = url;
+          img.src = url;
+        });
+      };
+      ws.onclose = () => {
+        if (wallWsSockets.get(sn) === ws) wallWsSockets.delete(sn);
+      };
+      ws.onerror = () => {
+        try { ws.close(); } catch { }
+      };
+    } catch { }
+  }
+}
+
+function ensureWallPolling() {
+  syncWallWsStreams();
 }
 
 function refreshMonitorTelemetry(dev) {
   safeSetText('monitor-panel-title', dev.displayName || dev.sn);
   safeSetText('panel-sn', dev.sn);
+  safeSetText('fs-target-label', `当前控制: ${dev.displayName || dev.sn}`);
   const badge = document.getElementById('monitor-panel-badge');
   if (badge) {
     if (!dev.online) {
@@ -1106,6 +1490,27 @@ function refreshMonitorTelemetry(dev) {
   safeSetText('panel-controllers', dev.online ? `左 ${dev.controllerLeftBattery}% · 右 ${dev.controllerRightBattery}%` : '左 -- · 右 --');
   safeSetText('panel-worn', dev.online ? (dev.isWorn ? '👓 佩戴中' : '未佩戴') : '--');
   safeSetText('panel-app', dev.trackingLost ? '⚠️ 定位丢失' : (isDesktopApp(dev.currentApp) ? '系统桌面' : (dev.appTitle || dev.currentApp)));
+
+  // 同步当前选中设备的音量条
+  syncVolumeSliderFromDevice(dev);
+
+  // 同步查找设备 & 语音通话按下状态
+  const isFind = Boolean(dev.isFinding) || findingSns.has(dev.sn);
+  const isVoice = Boolean(dev.isInVoiceCall) || voiceCallSns.has(dev.sn);
+  ['btn-single-find', 'fs-btn-find'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) {
+      b.classList.toggle('btn--active-toggle', isFind);
+      b.textContent = isFind ? '🔦 查找中(点击取消)' : '🔦 查找设备';
+    }
+  });
+  ['btn-single-voice', 'fs-btn-voice'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) {
+      b.classList.toggle('btn--active-toggle', isVoice);
+      b.textContent = isVoice ? '🎙️ 通话中(点击挂断)' : '🎙️ 语音通话';
+    }
+  });
 }
 
 async function copyCurrentSn() {
@@ -1189,6 +1594,7 @@ async function toggleLiveStream() {
 
   if (!isStreamingActive) {
     isStreamingActive = true;
+    activeStreamingSns.add(dev.sn);
     overlay.classList.add('hidden');
     liveBar.classList.remove('hidden');
     canvas.classList.add('hidden');
@@ -1196,13 +1602,54 @@ async function toggleLiveStream() {
 
     await fetch(`/api/stream/${encodeURIComponent(dev.sn)}/start`, { method: 'POST' }).catch(() => {});
     startStreamStatusPolling(dev.sn);
-
-    streamImg.src = apiUrl(`/api/stream/${encodeURIComponent(dev.sn)}/mjpeg?t=${Date.now()}`);
-    streamImg.onerror = () => startSnapshotStream(dev.sn);
+    startWsStream(dev.sn);
     showToast(`已开启 ${dev.displayName} 实时监看`);
   } else {
     stopLiveStreamInternal(dev.sn);
     showToast('已停止画面拉流');
+  }
+}
+
+let singleStreamWs = null;
+
+function stopWsStream() {
+  if (singleStreamWs) {
+    try { singleStreamWs.close(); } catch { }
+    singleStreamWs = null;
+  }
+}
+
+function startWsStream(sn) {
+  stopWsStream();
+  if (snapshotTimer) { clearInterval(snapshotTimer); snapshotTimer = null; }
+  const streamImg = document.getElementById('side-monitor-img');
+  if (!streamImg) return;
+  try {
+    const ws = new WebSocket(wsUrl(`/ws/stream/${encodeURIComponent(sn)}`));
+    ws.binaryType = 'blob';
+    singleStreamWs = ws;
+    ws.onmessage = (event) => {
+      if (!isStreamingActive || currentMonitorSn !== sn) return;
+      if (event.data instanceof Blob && event.data.size > 0) {
+        const url = URL.createObjectURL(event.data);
+        const old = streamImg.src;
+        streamImg.onload = () => { if (old && old.startsWith('blob:')) URL.revokeObjectURL(old); };
+        streamImg.src = url;
+      }
+    };
+    ws.onerror = () => {
+      if (isStreamingActive && currentMonitorSn === sn && !snapshotTimer) {
+        startSnapshotStream(sn);
+      }
+    };
+    ws.onclose = () => {
+      if (singleStreamWs === ws) singleStreamWs = null;
+      if (isStreamingActive && currentMonitorSn === sn && !snapshotTimer) {
+        startSnapshotStream(sn);
+      }
+    };
+  } catch {
+    startSnapshotStream(sn);
   }
 }
 
@@ -1232,7 +1679,7 @@ function startSnapshotStream(sn) {
     } catch { } finally {
       inFlight = false;
     }
-  }, 80);
+  }, 85);
 }
 
 function startStreamStatusPolling(sn) {
@@ -1271,6 +1718,8 @@ function stopStreamStatusPolling() {
 
 function stopLiveStreamInternal(sn) {
   isStreamingActive = false;
+  activeStreamingSns.delete(sn);
+  stopWsStream();
   stopStreamStatusPolling();
   if (snapshotTimer) { clearInterval(snapshotTimer); snapshotTimer = null; }
   const streamImg = document.getElementById('side-monitor-img');
@@ -1311,14 +1760,117 @@ async function singleDeviceAction(action) {
     });
     showToast(`已向 ${dev.displayName} 下发${screenOn ? '亮屏' : '息屏'}`);
   } else if (action === 'find') {
-    await fetch(`/api/devices/${sn}/find`, { method: 'POST' });
-    showToast(`已向 ${dev.displayName} 发送查找设备提示（亮屏/蜂鸣）`, '🔦');
+    const nextActive = !(Boolean(dev.isFinding) || findingSns.has(dev.sn));
+    if (nextActive) findingSns.add(dev.sn); else findingSns.delete(dev.sn);
+    dev.isFinding = nextActive;
+    refreshMonitorTelemetry(dev);
+    await fetch(`/api/devices/${sn}/find`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: nextActive })
+    });
+    showToast(nextActive ? `正在查找 ${dev.displayName}（亮屏/响铃提示）` : `已取消查找 ${dev.displayName}`, '🔦');
   } else if (action === 'voice_call') {
-    showToast(`语音通话请确保 PICO Business Suite 已登录并连接头显音频通道`, '🎙️');
+    const nextActive = !(Boolean(dev.isInVoiceCall) || voiceCallSns.has(dev.sn));
+    if (nextActive) {
+      const ok = await startVoiceIntercom(dev.sn);
+      if (!ok) return;
+      voiceCallSns.add(dev.sn);
+      dev.isInVoiceCall = true;
+      refreshMonitorTelemetry(dev);
+      await fetch(`/api/devices/${sn}/voice-call`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: true })
+      });
+      showToast(`已开启对 ${dev.displayName} 的实时语音对讲`, '🎙️');
+    } else {
+      stopVoiceIntercom();
+      voiceCallSns.delete(dev.sn);
+      dev.isInVoiceCall = false;
+      refreshMonitorTelemetry(dev);
+      await fetch(`/api/devices/${sn}/voice-call`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: false })
+      });
+      showToast(`已挂断与 ${dev.displayName} 的语音对讲`, '🎙️');
+    }
   } else if (action === 'reboot') {
     if (!confirm(`确认重启头显【${dev.displayName}】吗？`)) return;
     await fetch(`/api/devices/${sn}/reboot`, { method: 'POST' });
     showToast(`已向 ${dev.displayName} 下发重启指令`);
+  }
+}
+
+let voiceWs = null;
+let voiceMicStream = null;
+let voiceAudioCtx = null;
+let voiceProcessor = null;
+
+function stopVoiceIntercom() {
+  try { if (window.AndroidVoice && typeof window.AndroidVoice.stop === 'function') window.AndroidVoice.stop(); } catch { }
+  try { if (voiceProcessor) { voiceProcessor.disconnect(); voiceProcessor = null; } } catch { }
+  try { if (voiceAudioCtx) { voiceAudioCtx.close(); voiceAudioCtx = null; } } catch { }
+  try { if (voiceMicStream) { voiceMicStream.getTracks().forEach(t => t.stop()); voiceMicStream = null; } } catch { }
+  try { if (voiceWs) { voiceWs.close(); voiceWs = null; } } catch { }
+}
+
+async function startVoiceIntercom(sn) {
+  stopVoiceIntercom();
+  if (window.AndroidVoice && typeof window.AndroidVoice.start === 'function') {
+    const host = REMOTE_HOST || window.location.hostname;
+    const port = REMOTE_PORT || parseInt(window.location.port, 10) || 8999;
+    const started = window.AndroidVoice.start(host, port, sn);
+    if (!started) {
+      showToast('请先授予安卓端麦克风录音权限后重试', '⚠️');
+      return false;
+    }
+    return true;
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    showToast('当前环境不支持麦克风采集（需 localhost 或 HTTPS）', '⚠️');
+    return false;
+  }
+  try {
+    voiceMicStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 }
+    });
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    voiceAudioCtx = new AudioCtx();
+    const src = voiceAudioCtx.createMediaStreamSource(voiceMicStream);
+    const proc = voiceAudioCtx.createScriptProcessor(2048, 1, 1);
+    voiceProcessor = proc;
+    const inRate = voiceAudioCtx.sampleRate || 48000;
+    const outRate = 16000;
+
+    voiceWs = new WebSocket(wsUrl(`/ws/voice/${encodeURIComponent(sn)}`));
+    voiceWs.binaryType = 'arraybuffer';
+    voiceWs.onclose = () => {
+      voiceCallSns.delete(sn);
+    };
+
+    proc.onaudioprocess = (ev) => {
+      if (!voiceWs || voiceWs.readyState !== WebSocket.OPEN) return;
+      const input = ev.inputBuffer.getChannelData(0);
+      const ratio = inRate / outRate;
+      const outLen = Math.max(1, Math.floor(input.length / ratio));
+      const pcm = new Int16Array(outLen);
+      for (let i = 0; i < outLen; i++) {
+        const idx = Math.min(input.length - 1, Math.floor(i * ratio));
+        const s = Math.max(-1, Math.min(1, input[idx]));
+        pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+      voiceWs.send(pcm.buffer);
+    };
+
+    src.connect(proc);
+    proc.connect(voiceAudioCtx.destination);
+    return true;
+  } catch (err) {
+    stopVoiceIntercom();
+    showToast(`无法开启麦克风对讲: ${err?.message || err}`, '❌');
+    return false;
   }
 }
 
@@ -1364,27 +1916,71 @@ async function batchAction(action) {
   }
 }
 
+let isDraggingVolumeSlider = false;
+let lastVolumeSliderTouchMs = 0;
+
+function bindVolumeSliderState() {
+  const slider = document.getElementById('global-volume-slider');
+  if (!slider || slider.dataset.volBound === '1') return;
+  slider.dataset.volBound = '1';
+  const startDrag = () => {
+    isDraggingVolumeSlider = true;
+    lastVolumeSliderTouchMs = Date.now();
+  };
+  const endDrag = () => {
+    isDraggingVolumeSlider = false;
+    lastVolumeSliderTouchMs = Date.now();
+  };
+  slider.addEventListener('pointerdown', startDrag);
+  slider.addEventListener('mousedown', startDrag);
+  window.addEventListener('pointerup', endDrag);
+  window.addEventListener('mouseup', endDrag);
+  slider.addEventListener('blur', endDrag);
+}
+
+function syncVolumeSliderFromDevice(dev) {
+  if (!dev || typeof dev.volume !== 'number') return;
+  bindVolumeSliderState();
+  if (isDraggingVolumeSlider || Date.now() - lastVolumeSliderTouchMs < 900) return;
+  globalVolume = dev.volume;
+  const slider = document.getElementById('global-volume-slider');
+  if (slider && slider.value !== String(dev.volume)) {
+    slider.value = String(dev.volume);
+  }
+  safeSetText('global-vol-text', `${dev.volume}%`);
+}
+
 let globalVolumeDebounce = null;
 function onGlobalVolumeInput(val) {
+  bindVolumeSliderState();
+  lastVolumeSliderTouchMs = Date.now();
   globalVolume = parseInt(val, 10);
   safeSetText('global-vol-text', `${val}%`);
   if (globalVolumeDebounce) clearTimeout(globalVolumeDebounce);
-  globalVolumeDebounce = setTimeout(() => applyGlobalVolume(val, false), 200);
+  globalVolumeDebounce = setTimeout(() => applyGlobalVolume(val, false), 60);
 }
 
 async function applyGlobalVolume(val, showFeedback = true) {
   if (globalVolumeDebounce) { clearTimeout(globalVolumeDebounce); globalVolumeDebounce = null; }
+  const targetVol = parseInt(val, 10);
   const snList = selectedSns.size > 0
     ? Array.from(selectedSns)
-    : Array.from(devices.values()).filter(d => d.online).map(d => d.sn);
+    : (currentMonitorSn && devices.get(currentMonitorSn)?.online
+        ? [currentMonitorSn]
+        : Array.from(devices.values()).filter(d => d.online).map(d => d.sn));
   if (snList.length === 0) return;
+
+  snList.forEach(sn => {
+    const dev = devices.get(sn);
+    if (dev) dev.volume = targetVol;
+  });
 
   await fetch('/api/batch/volume', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ snList, volume: parseInt(val, 10) })
+    body: JSON.stringify({ snList, volume: targetVol })
   }).catch(() => {});
-  if (showFeedback) showToast(`已同步 ${snList.length} 台设备音量为 ${val}%`, '🔊');
+  if (showFeedback) showToast(`已同步 ${snList.length} 台设备音量为 ${targetVol}%`, '🔊');
 }
 
 function promptBatchSystem(action) {
@@ -1511,16 +2107,108 @@ function switchConfigTab(tab) {
     if (btn) btn.className = `tab-btn${t === tab ? ' tab-btn--active' : ''}`;
     if (content) content.classList.toggle('hidden', t !== tab);
   });
-  if (tab === 'env') loadPicoServiceStatus();
+  if (tab === 'env') {
+    loadPicoServiceStatus();
+    checkFirewallStatus();
+  }
 }
+
+async function checkFirewallStatus() {
+  const badge = document.getElementById('fw-status-badge');
+  if (badge) { badge.textContent = '检测中...'; badge.className = 'status-pill status-pill--warn'; }
+  try {
+    const res = await fetch('/api/system/firewall-status');
+    if (!res.ok) return;
+    const data = await res.json();
+    renderFirewallStatus(data);
+  } catch { }
+}
+
+function renderFirewallStatus(data) {
+  const badge = document.getElementById('fw-status-badge');
+  const netBadge = document.getElementById('fw-network-badge');
+  const tcpBadge = document.getElementById('fw-tcp-badge');
+  const udpBadge = document.getElementById('fw-udp-badge');
+  const okAll = !!(data.isPrivateNetwork && data.tcp8999Allowed && data.udp8998Allowed);
+  if (badge) {
+    badge.textContent = okAll ? '✅ 全部就绪' : '⚠️ 需配置放行';
+    badge.className = `status-pill ${okAll ? 'status-pill--online' : 'status-pill--warn'}`;
+  }
+  if (netBadge) {
+    netBadge.textContent = data.hasPublicNetwork ? '⚠️ 存在公用网络' : (data.isPrivateNetwork ? '✅ 专用网络' : '未识别');
+    netBadge.className = `status-pill ${data.isPrivateNetwork ? 'status-pill--online' : 'status-pill--warn'}`;
+  }
+  if (tcpBadge) {
+    tcpBadge.textContent = data.tcp8999Allowed ? '8999/TCP: ✅ 已放行' : '8999/TCP: ❌ 未放行';
+    tcpBadge.className = `status-pill ${data.tcp8999Allowed ? 'status-pill--online' : 'status-pill--error'}`;
+  }
+  if (udpBadge) {
+    udpBadge.textContent = data.udp8998Allowed ? '8998/UDP: ✅ 已放行' : '8998/UDP: ❌ 未放行';
+    udpBadge.className = `status-pill ${data.udp8998Allowed ? 'status-pill--online' : 'status-pill--error'}`;
+  }
+  safeSetText('fw-summary-text', data.summary || '');
+}
+
+async function setupFirewallAndNetwork() {
+  const btn = document.getElementById('btn-fw-setup');
+  if (btn) btn.disabled = true;
+  showToast('请在弹出的管理员授权确认中点击「是」以完成设置...', '🛡️');
+  try {
+    const res = await fetch('/api/system/firewall-setup', { method: 'POST' });
+    const data = await res.json();
+    if (data.status) renderFirewallStatus(data.status);
+    showToast(data.message || (data.success ? '设置成功' : '设置未完成'), data.success ? '✅' : '⚠️');
+  } catch (e) {
+    showToast('网络或权限异常: ' + (e.message || ''), '⚠️');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+let draggingConfigRowId = null;
 
 function renderConfigTables() {
   const appTbody = document.getElementById('app-config-tbody');
   if (appTbody) {
     appTbody.innerHTML = '';
-    projects.forEach(p => {
+    projects.forEach((p, idx) => {
       const tr = document.createElement('tr');
+      tr.draggable = true;
+      tr.dataset.projectId = p.id;
+      tr.addEventListener('dragstart', (e) => {
+        draggingConfigRowId = p.id;
+        tr.classList.add('dragging');
+        if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+      });
+      tr.addEventListener('dragend', () => {
+        draggingConfigRowId = null;
+        tr.classList.remove('dragging');
+        appTbody.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+      });
+      tr.addEventListener('dragover', (e) => {
+        if (!draggingConfigRowId || draggingConfigRowId === p.id) return;
+        e.preventDefault();
+        tr.classList.add('drag-over');
+      });
+      tr.addEventListener('dragleave', () => tr.classList.remove('drag-over'));
+      tr.addEventListener('drop', (e) => {
+        e.preventDefault();
+        tr.classList.remove('drag-over');
+        if (!draggingConfigRowId || draggingConfigRowId === p.id) return;
+        reorderProjectsByIds(draggingConfigRowId, p.id);
+      });
       tr.innerHTML = `
+        <td>
+          <div class="sort-arrows">
+            <span class="drag-handle" title="按住拖动排序">⋮⋮</span>
+            <button type="button" class="sort-btn" data-action="moveProject" data-arg="${escapeHtml(p.id)}" data-arg2="-1" ${idx === 0 ? 'disabled' : ''} title="上移">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>
+            </button>
+            <button type="button" class="sort-btn" data-action="moveProject" data-arg="${escapeHtml(p.id)}" data-arg2="1" ${idx === projects.length - 1 ? 'disabled' : ''} title="下移">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+          </div>
+        </td>
         <td><strong>${escapeHtml(p.icon || '🎮')} ${escapeHtml(p.name)}</strong></td>
         <td><span class="status-pill">${p.type === 'vr_video' ? 'VR视频' : 'VR应用'}</span></td>
         <td class="mono text-accent">${escapeHtml(p.packageName)}</td>
@@ -1630,6 +2318,180 @@ async function sendTestUdpMessage() {
   showToast(data.success ? 'UDP 测试指令已回执' : 'UDP 测试失败', data.success ? '📡' : '⚠️');
 }
 
+const EMOJI_LIBRARY = [
+  '🎮', '🕹️', '🥽', '🚀', '⚔️', '🏰', '🐉', '🦖',
+  '🌊', '🌌', '🔥', '⚡', '🏆', '🎯', '🎬', '🧩',
+  '🛡️', '🚗', '🛸', '👾', '👻', '🤖', '🌟', '💎'
+];
+
+const EMOJI_API_KEY = '73c762d0cf8f2b09180468e45509123207311b7c';
+const emojiApiCache = new Map();
+let activeEmojiCategory = 'recommended';
+let emojiSearchTimer = null;
+
+function renderEmojiList(list, selected) {
+  const grid = document.getElementById('emoji-picker-grid');
+  if (!grid) return;
+  if (!list || list.length === 0) {
+    grid.innerHTML = '<div class="panel-sub" style="grid-column: 1 / -1; text-align:center; padding: 10px;">未找到匹配的 Emoji</div>';
+    return;
+  }
+  grid.innerHTML = list.slice(0, 120).map(item => {
+    const ch = typeof item === 'string' ? item : item.character;
+    const title = typeof item === 'string' ? item : (item.unicodeName || item.slug || ch);
+    return `<button type="button" class="emoji-btn${ch === selected ? ' emoji-btn--active' : ''}" data-action="selectProjectEmoji" data-arg="${escapeHtml(ch)}" title="${escapeHtml(title)}">${ch}</button>`;
+  }).join('');
+}
+
+function renderEmojiPicker(selected = '🎮') {
+  if (activeEmojiCategory === 'recommended') {
+    renderEmojiList(EMOJI_LIBRARY, selected);
+  } else {
+    selectEmojiCategory(activeEmojiCategory, selected);
+  }
+}
+
+async function selectEmojiCategory(cat, selected = null) {
+  activeEmojiCategory = cat || 'recommended';
+  document.querySelectorAll('#emoji-cat-tabs button').forEach(btn => {
+    btn.classList.toggle('btn--primary', btn.dataset.arg === activeEmojiCategory);
+  });
+  const curSelected = selected ?? (document.getElementById('form-proj-icon')?.value || '🎮');
+  if (activeEmojiCategory === 'recommended') {
+    renderEmojiList(EMOJI_LIBRARY, curSelected);
+    return;
+  }
+  const cacheKey = `cat:${activeEmojiCategory}`;
+  if (emojiApiCache.has(cacheKey)) {
+    renderEmojiList(emojiApiCache.get(cacheKey), curSelected);
+    return;
+  }
+  const grid = document.getElementById('emoji-picker-grid');
+  if (grid) grid.innerHTML = '<div class="panel-sub" style="grid-column: 1 / -1; text-align:center; padding: 10px;">正在加载 Emoji API 图标库...</div>';
+  try {
+    const res = await fetch(`https://emoji-api.com/categories/${encodeURIComponent(activeEmojiCategory)}?access_key=${EMOJI_API_KEY}`);
+    const data = await res.json();
+    const list = Array.isArray(data) ? data.filter(x => x && x.character) : EMOJI_LIBRARY;
+    emojiApiCache.set(cacheKey, list);
+    renderEmojiList(list, curSelected);
+  } catch {
+    renderEmojiList(EMOJI_LIBRARY, curSelected);
+  }
+}
+
+function onEmojiSearchInput(query) {
+  const q = (query || '').trim();
+  if (emojiSearchTimer) clearTimeout(emojiSearchTimer);
+  emojiSearchTimer = setTimeout(async () => {
+    const curSelected = document.getElementById('form-proj-icon')?.value || '🎮';
+    if (!q) {
+      selectEmojiCategory(activeEmojiCategory, curSelected);
+      return;
+    }
+    const cacheKey = `q:${q.toLowerCase()}`;
+    if (emojiApiCache.has(cacheKey)) {
+      renderEmojiList(emojiApiCache.get(cacheKey), curSelected);
+      return;
+    }
+    const grid = document.getElementById('emoji-picker-grid');
+    if (grid) grid.innerHTML = '<div class="panel-sub" style="grid-column: 1 / -1; text-align:center; padding: 10px;">正在搜索 Emoji...</div>';
+    try {
+      const res = await fetch(`https://emoji-api.com/emojis?search=${encodeURIComponent(q)}&access_key=${EMOJI_API_KEY}`);
+      const data = await res.json();
+      const list = Array.isArray(data) ? data.filter(x => x && x.character) : [];
+      emojiApiCache.set(cacheKey, list);
+      renderEmojiList(list, curSelected);
+    } catch {
+      renderEmojiList([], curSelected);
+    }
+  }, 250);
+}
+
+function selectProjectEmoji(emoji) {
+  const input = document.getElementById('form-proj-icon');
+  if (input) input.value = emoji;
+  document.querySelectorAll('#emoji-picker-grid .emoji-btn').forEach(btn => {
+    btn.classList.toggle('emoji-btn--active', btn.dataset.arg === emoji);
+  });
+}
+
+function renderBannerPresets(selectedUrl = '') {
+  const grid = document.getElementById('banner-preset-grid');
+  if (!grid) return;
+  grid.innerHTML = WALLPAPERS.map(wp =>
+    `<button type="button" class="banner-preset-item${selectedUrl === wp.url ? ' banner-preset-item--active' : ''}" style="background-image: url('${wp.url}')" data-action="selectProjectBanner" data-arg="${wp.url}"><span>${escapeHtml(wp.name)}</span></button>`
+  ).join('');
+}
+
+function selectProjectBanner(url) {
+  const input = document.getElementById('form-proj-banner');
+  if (input) input.value = url;
+  renderBannerPresets(url);
+}
+
+function updateBannerPresetHighlight(url) {
+  renderBannerPresets((url || '').trim());
+}
+
+function onProjectBannerFileChange(input) {
+  const file = input?.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      const maxW = 640;
+      const scale = img.width > maxW ? (maxW / img.width) : 1;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+      const bannerInput = document.getElementById('form-proj-banner');
+      if (bannerInput) bannerInput.value = dataUrl;
+      renderBannerPresets('');
+      showToast('已载入自定义 Banner 图片', '🖼️');
+    };
+    img.src = String(reader.result || '');
+  };
+  reader.readAsDataURL(file);
+}
+
+async function moveProject(id, delta) {
+  const idx = projects.findIndex(p => p.id === id);
+  if (idx < 0) return;
+  const targetIdx = idx + delta;
+  if (targetIdx < 0 || targetIdx >= projects.length) return;
+  const copy = [...projects];
+  const [item] = copy.splice(idx, 1);
+  copy.splice(targetIdx, 0, item);
+  await saveProjectOrder(copy.map(p => p.id));
+}
+
+async function reorderProjectsByIds(fromId, toId) {
+  const fromIdx = projects.findIndex(p => p.id === fromId);
+  const toIdx = projects.findIndex(p => p.id === toId);
+  if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return;
+  const copy = [...projects];
+  const [item] = copy.splice(fromIdx, 1);
+  copy.splice(toIdx, 0, item);
+  await saveProjectOrder(copy.map(p => p.id));
+}
+
+async function saveProjectOrder(ids) {
+  const res = await fetch('/api/config/projects/reorder', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids })
+  });
+  if (res.ok) {
+    await loadConfig();
+    renderConfigTables();
+    showToast('体验项目排序已保存');
+  }
+}
+
 function openAddProjectForm() {
   document.getElementById('project-form-container')?.classList.remove('hidden');
   safeSetText('project-form-title', '添加新体验项目');
@@ -1639,6 +2501,10 @@ function openAddProjectForm() {
   document.getElementById('form-proj-type').value = 'vr_app';
   document.getElementById('form-proj-duration').value = '15';
   document.getElementById('form-proj-icon').value = '🎮';
+  const bannerEl = document.getElementById('form-proj-banner');
+  if (bannerEl) bannerEl.value = '';
+  renderEmojiPicker('🎮');
+  renderBannerPresets('');
 }
 
 function openEditProjectForm(id) {
@@ -1652,6 +2518,10 @@ function openEditProjectForm(id) {
   document.getElementById('form-proj-type').value = p.type || 'vr_app';
   document.getElementById('form-proj-duration').value = p.durationMinutes || 15;
   document.getElementById('form-proj-icon').value = p.icon || '🎮';
+  const bannerEl = document.getElementById('form-proj-banner');
+  if (bannerEl) bannerEl.value = p.bannerUrl || '';
+  renderEmojiPicker(p.icon || '🎮');
+  renderBannerPresets(p.bannerUrl || '');
 }
 
 function closeProjectForm() {
@@ -1665,12 +2535,13 @@ async function submitProjectForm() {
   const type = document.getElementById('form-proj-type').value;
   const durationMinutes = parseInt(document.getElementById('form-proj-duration').value, 10) || 15;
   const icon = document.getElementById('form-proj-icon').value.trim() || '🎮';
+  const bannerUrl = (document.getElementById('form-proj-banner')?.value || '').trim();
   if (!name || !packageName) return showToast('请填写项目名称和包名', '⚠️');
 
   const res = await fetch('/api/config/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: id || '', name, packageName, type, durationMinutes, icon })
+    body: JSON.stringify({ id: id || '', name, packageName, type, durationMinutes, icon, bannerUrl })
   });
   if (res.ok) {
     closeProjectForm();
@@ -1823,19 +2694,44 @@ function renderGroupManageList() {
     return;
   }
   groups.forEach(g => {
-    const row = document.createElement('div');
-    row.className = 'diag-row';
-    row.innerHTML = `
-      <div>
-        <strong>🏷️ ${escapeHtml(g.name)}</strong>
-        <span class="panel-sub" style="margin-inline-start: 0.5rem;">包含 ${(g.deviceIdentifiers || []).length} 台设备</span>
+    const ids = g.deviceIdentifiers || [];
+    const matchedDevs = Array.from(devices.values()).filter(d => ids.includes(d.sn) || ids.includes(d.alias));
+    const proj = projects.find(p => p.id === g.defaultProjectId || p.packageName === g.defaultProjectId);
+    const card = document.createElement('div');
+    card.className = 'group-card';
+    card.innerHTML = `
+      <div class="flex-between">
+        <div class="flex-row">
+          <strong>🏷️ ${escapeHtml(g.name)}</strong>
+          <span class="status-pill status-pill--info">${ids.length} 台设备</span>
+          ${proj ? `<span class="status-pill">${escapeHtml(proj.icon || '🎮')} ${escapeHtml(proj.name)}</span>` : ''}
+        </div>
+        <div class="flex-row">
+          <button type="button" class="btn btn--xs btn--emerald" data-action="selectGroupDevicesInMatrix" data-arg="${escapeHtml(g.id)}">勾选本组</button>
+          <button type="button" class="btn btn--xs" data-action="editGroup" data-arg="${escapeHtml(g.id)}">编辑</button>
+          <button type="button" class="btn btn--xs btn--danger" data-action="deleteGroup" data-arg="${escapeHtml(g.id)}">删除</button>
+        </div>
       </div>
-      <div class="flex-row">
-        <button type="button" class="btn btn--xs" data-action="editGroup" data-arg="${escapeHtml(g.id)}">编辑</button>
-        <button type="button" class="btn btn--xs btn--danger" data-action="deleteGroup" data-arg="${escapeHtml(g.id)}">删除</button>
+      <div class="flex-row" style="flex-wrap: wrap; gap: 4px;">
+        ${matchedDevs.length ? matchedDevs.map(d => `<span class="status-pill ${d.online ? 'status-pill--online' : ''}">${escapeHtml(d.displayName)}</span>`).join('') : '<span class="panel-sub">暂未分配设备</span>'}
       </div>
     `;
-    container.appendChild(row);
+    container.appendChild(card);
+  });
+}
+
+function selectGroupDevicesInMatrix(groupId) {
+  currentActiveGroupId = groupId;
+  renderGroupTabs();
+  selectCurrentGroup();
+  closeModalById('group-modal');
+}
+
+function filterGroupDevicePills(keyword) {
+  const kw = (keyword || '').trim().toLowerCase();
+  document.querySelectorAll('#group-device-selector-grid .group-device-pill').forEach(lbl => {
+    const txt = (lbl.dataset.search || '').toLowerCase();
+    lbl.style.display = !kw || txt.includes(kw) ? '' : 'none';
   });
 }
 
@@ -1845,6 +2741,8 @@ function populateGroupFormSelectors(selectedIds = [], selectedProj = '') {
     sel.innerHTML = '<option value="">-- 不预设 --</option>' +
       projects.map(p => `<option value="${escapeHtml(p.id)}" ${p.id === selectedProj ? 'selected' : ''}>${escapeHtml(p.icon || '🎮')} ${escapeHtml(p.name)}</option>`).join('');
   }
+  const filterEl = document.getElementById('group-dev-filter');
+  if (filterEl) filterEl.value = '';
   const grid = document.getElementById('group-device-selector-grid');
   if (grid) {
     grid.innerHTML = '';
@@ -1856,10 +2754,9 @@ function populateGroupFormSelectors(selectedIds = [], selectedProj = '') {
     all.forEach(d => {
       const checked = selectedIds.includes(d.sn) || selectedIds.includes(d.alias);
       const lbl = document.createElement('label');
-      lbl.className = 'flex-row';
-      lbl.style.fontSize = '0.78rem';
-      lbl.style.cursor = 'pointer';
-      lbl.innerHTML = `<input type="checkbox" name="group-dev-cb" value="${escapeHtml(d.sn)}" ${checked ? 'checked' : ''}> <span>${escapeHtml(d.displayName)}</span>`;
+      lbl.className = 'group-device-pill';
+      lbl.dataset.search = `${d.displayName} ${d.alias || ''} ${d.sn}`;
+      lbl.innerHTML = `<input type="checkbox" name="group-dev-cb" value="${escapeHtml(d.sn)}" ${checked ? 'checked' : ''}> <span class="dot" style="background:${d.online ? 'var(--emerald)' : 'var(--text-muted)'}"></span><span>${escapeHtml(d.displayName)}</span><span class="mono panel-sub">${escapeHtml(d.sn.slice(-4))}</span>`;
       grid.appendChild(lbl);
     });
   }

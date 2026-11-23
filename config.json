@@ -1,69 +1,77 @@
 {
-  "WebPort": 8999,
-  "UdpPort": 8998,
-  "EnableUdpService": true,
-  "AutoLockOnFind": true,
-  "EnableSimulatorFallback": false,
-  "Projects": [
+  "webPort": 8999,
+  "udpPort": 8998,
+  "enableUdpService": true,
+  "autoLockOnFind": true,
+  "enableSimulatorFallback": false,
+  "adbPath": null,
+  "projects": [
     {
-      "Id": "proj-1",
-      "Name": "胡闹厨房",
-      "Type": "vr_app",
-      "PackageName": "com.goldon.hunaochufang",
-      "DurationMinutes": 15,
-      "Icon": "🎮",
-      "ExtraJson": ""
+      "id": "proj-1",
+      "name": "胡闹厨房",
+      "type": "vr_app",
+      "packageName": "com.goldon.hunaochufang",
+      "durationMinutes": 15,
+      "icon": "🎮",
+      "bannerUrl": "",
+      "extraJson": ""
     },
     {
-      "Id": "proj-2",
-      "Name": "深海探秘大冒险",
-      "Type": "vr_app",
-      "PackageName": "com.vr.ocean",
-      "DurationMinutes": 12,
-      "Icon": "🐋",
-      "ExtraJson": ""
+      "id": "proj-2",
+      "name": "深海探秘大冒险",
+      "type": "vr_app",
+      "packageName": "com.vr.ocean",
+      "durationMinutes": 12,
+      "icon": "🐋",
+      "bannerUrl": "",
+      "extraJson": ""
     },
     {
-      "Id": "proj-3",
-      "Name": "重返恐龙纪元",
-      "Type": "vr_app",
-      "PackageName": "com.vr.dino",
-      "DurationMinutes": 10,
-      "Icon": "🦖",
-      "ExtraJson": ""
+      "id": "proj-3",
+      "name": "重返恐龙纪元",
+      "type": "vr_app",
+      "packageName": "com.vr.dino",
+      "durationMinutes": 10,
+      "icon": "🦖",
+      "bannerUrl": "",
+      "extraJson": ""
     },
     {
-      "Id": "proj-4",
-      "Name": "PICO 官方全景影院",
-      "Type": "vr_app",
-      "PackageName": "com.pico.vrplayer",
-      "DurationMinutes": 20,
-      "Icon": "🎬",
-      "ExtraJson": ""
+      "id": "proj-4",
+      "name": "PICO 官方全景影院",
+      "type": "vr_app",
+      "packageName": "com.pico.vrplayer",
+      "durationMinutes": 20,
+      "icon": "🎬",
+      "bannerUrl": "",
+      "extraJson": ""
     },
     {
-      "Id": "proj-5",
-      "Name": "王城迷阵",
-      "Type": "vr_app",
-      "PackageName": "com.goldon.wangchengmizhen",
-      "DurationMinutes": 15,
-      "Icon": "🎮",
-      "ExtraJson": ""
+      "id": "proj-5",
+      "name": "王城迷阵",
+      "type": "vr_app",
+      "packageName": "com.goldon.wangchengmizhen",
+      "durationMinutes": 15,
+      "icon": "🎮",
+      "bannerUrl": "",
+      "extraJson": ""
     },
     {
-      "Id": "proj-6",
-      "Name": "王城迷阵 (大师版)",
-      "Type": "vr_app",
-      "PackageName": "com.goldon.wangchengmizhenMaster",
-      "DurationMinutes": 15,
-      "Icon": "🎮",
-      "ExtraJson": ""
+      "id": "proj-6",
+      "name": "王城迷阵 (大师版)",
+      "type": "vr_app",
+      "packageName": "com.goldon.wangchengmizhenMaster",
+      "durationMinutes": 15,
+      "icon": "🎮",
+      "bannerUrl": "",
+      "extraJson": ""
     }
   ],
-  "HeadsetAliases": {
+  "groups": [],
+  "headsetAliases": {
     "PA9410MGJ9090528G": "022"
   },
-  "DeviceDefaultProjects": {
+  "deviceDefaultProjects": {
     "022": "com.goldon.hunaochufang",
     "01": "com.vr.ocean",
     "02": "com.vr.dino"

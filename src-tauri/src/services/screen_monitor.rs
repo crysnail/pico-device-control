@@ -5,9 +5,18 @@ use dashmap::DashMap;
 use image::codecs::jpeg::JpegEncoder;
 use image::{ColorType, Rgb, RgbImage};
 use std::collections::HashMap;
+use std::io::Read;
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{broadcast, mpsc};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 struct RawFrameJob {
     dev_id: String,
@@ -18,12 +27,18 @@ struct RawFrameJob {
     pix_format: i32,
 }
 
+struct RtmpBridgeHandle {
+    stop_flag: Arc<AtomicBool>,
+    child: Arc<std::sync::Mutex<Option<Child>>>,
+}
+
 pub struct ScreenMonitorService {
     latest_frames: Arc<DashMap<String, Bytes>>,
     statuses: Arc<DashMap<String, DeviceStreamStatus>>,
     last_enqueue_ts: DashMap<String, Instant>,
     broadcasters: Arc<DashMap<String, broadcast::Sender<Bytes>>>,
     frame_tx: mpsc::Sender<RawFrameJob>,
+    rtmp_bridges: DashMap<String, RtmpBridgeHandle>,
 }
 
 impl ScreenMonitorService {
@@ -96,6 +111,7 @@ impl ScreenMonitorService {
             last_enqueue_ts: DashMap::new(),
             broadcasters,
             frame_tx,
+            rtmp_bridges: DashMap::new(),
         }
     }
 
@@ -247,6 +263,151 @@ impl ScreenMonitorService {
             .unwrap_or(0)
     }
 
+    pub fn push_jpeg_frame(&self, sn: &str, jpeg: Vec<u8>, width: u32, height: u32) {
+        if jpeg.is_empty() {
+            return;
+        }
+        let bytes = Bytes::from(jpeg);
+        self.latest_frames.insert(sn.to_string(), bytes.clone());
+        let now = Utc::now();
+        self.statuses
+            .entry(sn.to_string())
+            .and_modify(|s| {
+                if s.first_frame_time.is_none() {
+                    s.first_frame_time = Some(now);
+                }
+                if let Some(prev) = s.last_frame_time {
+                    let dt = (now - prev).num_milliseconds().max(1) as f64 / 1000.0;
+                    s.fps = (1.0 / dt).clamp(0.1, 60.0);
+                }
+                s.last_frame_time = Some(now);
+                s.total_frames += 1;
+                s.last_width = width;
+                s.last_height = height;
+                s.phase = StreamPhase::Streaming;
+                s.diagnostic_message = format!("RTMP 实时画面推流中 ({}x{})", width, height);
+            })
+            .or_insert_with(|| {
+                let mut s = DeviceStreamStatus::new(sn.to_string());
+                s.is_requested = true;
+                s.first_frame_time = Some(now);
+                s.last_frame_time = Some(now);
+                s.total_frames = 1;
+                s.last_width = width;
+                s.last_height = height;
+                s.phase = StreamPhase::Streaming;
+                s.diagnostic_message = format!("RTMP 实时画面推流中 ({}x{})", width, height);
+                s
+            });
+        if let Some(sender) = self.broadcasters.get(sn) {
+            let _ = sender.send(bytes);
+        }
+    }
+
+    pub fn stop_rtmp_bridge(&self, sn: &str) {
+        if let Some((_, handle)) = self.rtmp_bridges.remove(sn) {
+            handle.stop_flag.store(true, Ordering::SeqCst);
+            if let Ok(mut guard) = handle.child.lock() {
+                if let Some(ref mut child) = *guard {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+    }
+
+    pub fn start_rtmp_bridge(self: &Arc<Self>, sn: &str, rtmp_url: &str) {
+        self.stop_rtmp_bridge(sn);
+
+        let ffmpeg_bin = find_ffmpeg_binary();
+        let mut cmd = Command::new(&ffmpeg_bin);
+        cmd.args([
+            "-fflags", "nobuffer+discardcorrupt",
+            "-flags", "low_delay",
+            "-analyzeduration", "2000000",
+            "-probesize", "2000000",
+            "-rtmp_live", "live",
+            "-i", rtmp_url,
+            "-an",
+            "-fps_mode", "vfr",
+            "-vf", "scale=960:-2",
+            "-f", "image2pipe",
+            "-vcodec", "mjpeg",
+            "-q:v", "5",
+            "pipe:1",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("[ScreenMonitor] 启动 ffmpeg RTMP 拉流失败 ({}): {}", ffmpeg_bin, e);
+                return;
+            }
+        };
+
+        let Some(mut stdout) = child.stdout.take() else {
+            let _ = child.kill();
+            return;
+        };
+
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let child_arc = Arc::new(std::sync::Mutex::new(Some(child)));
+        self.rtmp_bridges.insert(
+            sn.to_string(),
+            RtmpBridgeHandle {
+                stop_flag: stop_flag.clone(),
+                child: child_arc.clone(),
+            },
+        );
+
+        let svc = self.clone();
+        let sn_owned = sn.to_string();
+        let url_owned = rtmp_url.to_string();
+        std::thread::Builder::new()
+            .name(format!("pico-rtmp-{}", &sn_owned[sn_owned.len().saturating_sub(6)..]))
+            .spawn(move || {
+                tracing::info!("[ScreenMonitor] 启动 RTMP MJPEG 解码桥接 SN={} URL={}", sn_owned, url_owned);
+                let mut acc: Vec<u8> = Vec::with_capacity(256 * 1024);
+                let mut buf = [0u8; 32768];
+                while !stop_flag.load(Ordering::Relaxed) {
+                    match stdout.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            acc.extend_from_slice(&buf[..n]);
+                            while let Some(soi) = find_marker(&acc, 0xFF, 0xD8, 0) {
+                                if soi > 0 {
+                                    acc.drain(0..soi);
+                                }
+                                if let Some(eoi) = find_marker(&acc, 0xFF, 0xD9, 2) {
+                                    let frame_end = eoi + 2;
+                                    let jpeg = acc.drain(0..frame_end).collect::<Vec<u8>>();
+                                    svc.push_jpeg_frame(&sn_owned, jpeg, 640, 360);
+                                } else {
+                                    break;
+                                }
+                            }
+                            if acc.len() > 2 * 1024 * 1024 {
+                                acc.clear();
+                            }
+                        }
+                    }
+                }
+                if let Ok(mut guard) = child_arc.lock() {
+                    if let Some(ref mut ch) = *guard {
+                        let _ = ch.kill();
+                        let _ = ch.wait();
+                    }
+                }
+                tracing::info!("[ScreenMonitor] RTMP 解码桥接已退出 SN={}", sn_owned);
+            })
+            .ok();
+    }
+
     /// 生成轻量级占位 JPEG 帧（无真机推流时保活使用）
     pub fn generate_placeholder_jpeg(is_suite_ready: bool) -> Bytes {
         let width = 640u32;
@@ -283,6 +444,99 @@ impl ScreenMonitorService {
         let _ = enc.encode(img.as_raw(), width, height, ColorType::Rgb8.into());
         Bytes::from(buf)
     }
+}
+
+fn find_marker(buf: &[u8], b0: u8, b1: u8, start: usize) -> Option<usize> {
+    if buf.len() < start + 2 {
+        return None;
+    }
+    buf[start..].windows(2).position(|w| w[0] == b0 && w[1] == b1).map(|p| start + p)
+}
+
+fn find_ffmpeg_binary() -> String {
+    for cand in [r"C:\ffmpeg\bin\ffmpeg.exe", r"ffmpeg.exe", "ffmpeg"] {
+        if cand == "ffmpeg" || cand == "ffmpeg.exe" || std::path::Path::new(cand).exists() {
+            return cand.to_string();
+        }
+    }
+    "ffmpeg".to_string()
+}
+
+/// 从 PICO Business Suite 当日日志中解析指定 SN 的最新 RTMP 推流地址或头显 IP
+pub fn resolve_rtmp_url_from_suite_log(sn: &str) -> Option<(String, String)> {
+    let local_app = std::env::var("LOCALAPPDATA").ok()?;
+    let log_dir = std::path::Path::new(&local_app).join("PICOBusinessSuitData").join("log");
+    let entries = std::fs::read_dir(&log_dir).ok()?;
+    let mut files: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("txt"))
+        .collect();
+    files.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
+    let latest = files.last()?.path();
+    let content = std::fs::read_to_string(latest).ok()?;
+
+    // 倒序查找该 SN 最新的 cmd: 46 (RTMP url) 或 getWifiInfo (ip)
+    for line in content.lines().rev() {
+        if !line.contains(sn) {
+            continue;
+        }
+        if line.contains("cmd:  46") || line.contains("rtmp://") {
+            if let Some(idx) = line.find("rtmp://") {
+                let tail = &line[idx..];
+                let end = tail.find('"').or_else(|| tail.find('\\')).unwrap_or(tail.len());
+                let raw_url = tail[..end].trim();
+                let clean_url = raw_url.split('?').next().unwrap_or(raw_url).to_string();
+                let ip = clean_url
+                    .trim_start_matches("rtmp://")
+                    .split(':')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                if !clean_url.is_empty() && !ip.is_empty() {
+                    return Some((clean_url, ip));
+                }
+            }
+        }
+        if line.contains("getWifiInfo") && line.contains("\"ip\"") {
+            if let Some(idx) = line.find("\"ip\":\"") {
+                let tail = &line[idx + 6..];
+                if let Some(end) = tail.find('"') {
+                    let ip = tail[..end].trim().to_string();
+                    if !ip.is_empty() {
+                        return Some((format!("rtmp://{}:3343/live/cast", ip), ip));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 从 PICO Business Suite 当日日志中解析指定 SN 的最新真实音量 (cmd: 94 -> "SN|vol")
+pub fn resolve_volume_from_suite_log(sn: &str) -> Option<u32> {
+    let local_app = std::env::var("LOCALAPPDATA").ok()?;
+    let log_dir = std::path::Path::new(&local_app).join("PICOBusinessSuitData").join("log");
+    let entries = std::fs::read_dir(&log_dir).ok()?;
+    let mut files: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("txt"))
+        .collect();
+    files.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
+    let latest = files.last()?.path();
+    let content = std::fs::read_to_string(latest).ok()?;
+    let prefix = format!("{}|", sn);
+    for line in content.lines().rev().take(1500) {
+        if line.contains("cmd:  94") && line.contains(&prefix) {
+            if let Some(idx) = line.rfind(&prefix) {
+                let tail = &line[idx + prefix.len()..];
+                let num_str: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if let Ok(v) = num_str.parse::<u32>() {
+                    return Some(v.min(100));
+                }
+            }
+        }
+    }
+    None
 }
 
 fn encode_frame_to_jpeg(job: &RawFrameJob) -> Option<Vec<u8>> {

@@ -6,7 +6,7 @@ use crate::services::pico_sdk_ffi::{
     PXREADevAlias, PXREADevBattery, PXREADevModel, PXREAFrameBlob, PXREAFrameBlobMultiplyMonitor,
     PXREAMonitorPara,
 };
-use crate::services::screen_monitor::ScreenMonitorService;
+use crate::services::screen_monitor::{resolve_volume_from_suite_log, ScreenMonitorService};
 use crate::services::service_mode;
 use chrono::Utc;
 use std::ffi::{c_int, c_void};
@@ -144,6 +144,12 @@ unsafe extern "C" fn on_sdk_callback(
                 ctx.device_manager.update_lock_state(&sn, false);
             }
         }
+        cb_type::DEVICE_SENSOR => {
+            let sn = ptr_to_string(user_data);
+            if !sn.is_empty() {
+                ctx.device_manager.update_wear_state(&sn, _status != 0);
+            }
+        }
         cb_type::DEVICE_SCREEN_MONITOR_PARAMETER
         | cb_type::DEVICE_MONITOR_PARAMETER
         | cb_type::DEVICE_STREAM_MONITOR_PARAMETER => {
@@ -241,11 +247,11 @@ impl PicoSdkService {
             let _ = svc_init.reconnect_sdk().await;
         });
 
-        // 3 秒遥测轮询循环
+        // 2 秒遥测轮询循环
         let svc_tel = self.clone();
         tokio::spawn(async move {
             while !svc_tel.shutdown.load(Ordering::Relaxed) {
-                sleep(Duration::from_secs(3)).await;
+                sleep(Duration::from_secs(2)).await;
                 if svc_tel.shutdown.load(Ordering::Relaxed) {
                     break;
                 }
@@ -262,6 +268,15 @@ impl PicoSdkService {
                         let _ = pico_sdk_ffi::get_controller_battery(&dev.sn, 0);
                         let _ = pico_sdk_ffi::get_controller_battery(&dev.sn, 1);
                         let _ = pico_sdk_ffi::get_current_app(&dev.sn);
+                        let adb_vol = svc_tel.device_manager.adb_service().get_volume(&dev.sn).await;
+                        let real_vol = adb_vol.or_else(|| resolve_volume_from_suite_log(&dev.sn));
+                        if let Some(v) = real_vol {
+                            if v != dev.volume {
+                                svc_tel.device_manager.add_or_update_device(&dev.sn, |d| {
+                                    d.volume = v;
+                                });
+                            }
+                        }
                         if let Some(last) = dev.last_seen {
                             if (now - last).num_seconds() > 30 {
                                 tracing::info!("[PICO SDK] 设备失联超过30s，置为离线 SN: {}", dev.sn);
@@ -370,7 +385,7 @@ impl PicoSdkService {
 
         if !pico_sdk_ffi::is_dll_loaded() {
             status.status_summary = "未检测到 PXREAClientSDK.dll 动态库".into();
-            status.advice = "请确认 PXREAClientSDK.dll 与 PicoManager.exe 位于同一目录".into();
+            status.advice = "请确认 PXREAClientSDK.dll 与 PicoVR-Manager.exe 位于同一目录".into();
         } else if !status.is_process_running {
             status.status_summary = "PICO 官方企业应用套件未运行".into();
             status.advice = "请在电脑上启动并登录 PICO Business Suite 官方软件".into();

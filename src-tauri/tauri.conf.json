@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "PicoManager",
+  "productName": "PicoVR-Manager",
   "version": "2.0.0",
-  "identifier": "com.pico.manager",
+  "identifier": "com.picovr.manager",
   "build": {
     "beforeDevCommand": "",
     "beforeBuildCommand": "",
@@ -19,13 +19,13 @@
         "minHeight": 720,
         "resizable": true,
         "fullscreen": false,
-        "decorations": true,
+        "decorations": false,
         "transparent": false,
         "center": true
       }
     ],
     "security": {
-      "csp": "default-src 'self' http://*:* ws://*:*; img-src 'self' http://*:* blob: data:; style-src 'self'; style-src-attr 'unsafe-inline'; script-src 'self'; connect-src 'self' http://*:* ws://*:*"
+      "csp": "default-src 'self' http://*:* ws://*:*; img-src 'self' http://*:* blob: data:; style-src 'self'; style-src-attr 'unsafe-inline'; script-src 'self'; connect-src 'self' http://*:* ws://*:* https://emoji-api.com"
     }
   },
   "bundle": {

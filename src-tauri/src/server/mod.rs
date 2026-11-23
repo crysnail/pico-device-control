@@ -69,11 +69,17 @@ async fn static_handler(uri: Uri) -> Response {
         let mime = mime_guess::from_path(path).first_or_octet_stream();
         return (
             StatusCode::OK,
-            [(
-                header::CONTENT_TYPE,
-                HeaderValue::from_str(mime.as_ref())
-                    .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
-            )],
+            [
+                (
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_str(mime.as_ref())
+                        .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+                ),
+                (
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("no-store, must-revalidate"),
+                ),
+            ],
             content.data.into_owned(),
         )
             .into_response();
@@ -83,10 +89,16 @@ async fn static_handler(uri: Uri) -> Response {
     if let Some(index) = EmbeddedUi::get("index.html") {
         return (
             StatusCode::OK,
-            [(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("text/html; charset=utf-8"),
-            )],
+            [
+                (
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/html; charset=utf-8"),
+                ),
+                (
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("no-store, must-revalidate"),
+                ),
+            ],
             index.data.into_owned(),
         )
             .into_response();

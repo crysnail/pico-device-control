@@ -22,15 +22,15 @@ finally {
     Pop-Location
 }
 
-$ReleaseExe = Join-Path $TauriDir "target\release\pico-manager-desktop.exe"
+$ReleaseExe = Join-Path $TauriDir "target\release\PicoVR-Manager.exe"
 if (-not (Test-Path $ReleaseExe)) {
     throw "未找到编译产物: $ReleaseExe"
 }
 
-# 若旧版 PicoManager.exe 正在运行，先安全结束进程以释放文件锁
-$running = Get-Process -Name "PicoManager" -ErrorAction SilentlyContinue
+# 若旧版 PicoVR-Manager.exe / PicoManager.exe 正在运行，先安全结束进程以释放文件锁
+$running = Get-Process -Name "PicoVR-Manager", "PicoManager" -ErrorAction SilentlyContinue
 if ($running) {
-    Write-Host "检测到运行中的 PicoManager.exe，正在停止以更新构建产物..." -ForegroundColor Yellow
+    Write-Host "检测到运行中的 PicoVR-Manager，正在停止以更新构建产物..." -ForegroundColor Yellow
     $running | Stop-Process -Force
     Start-Sleep -Milliseconds 600
 }
@@ -38,32 +38,27 @@ if ($running) {
 if (-not (Test-Path $BuildDir)) {
     New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
 } else {
-    # 清理旧版残留 DLL 与多余文件，保留目录句柄以避免文件管理器占用报错
+    # 清理旧版残留 DLL 与旧名主程序（保留用户已有的 config.json）
     Get-ChildItem -Path $BuildDir -Filter "*.dll" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    Remove-Item -Force (Join-Path $BuildDir "PicoManager.exe") -ErrorAction SilentlyContinue
 }
 
 # 1. 一体化主程序（已内置前端 UI、HTTP/WS/UDP 后台与按需释放的原生 SDK 库，无多余 DLL）
-Copy-Item -Force $ReleaseExe (Join-Path $BuildDir "PicoManager.exe")
+Copy-Item -Force $ReleaseExe (Join-Path $BuildDir "PicoVR-Manager.exe")
 
-# 2. 默认运行配置文件
-$srcConfig = Join-Path $RootDir "config.json"
-if (Test-Path $srcConfig) {
-    Copy-Item -Force $srcConfig (Join-Path $BuildDir "config.json")
-}
-
-# 3. 精简使用说明
+# 2. 精简使用说明（不在构建期生成 config.json，仅在软件内实际配置变更后自动在同目录生成）
 $readme = @"
-PICO VR 场馆统一设备管理控制中心 (PicoManager v2.0.0 - Rust 原生一体化版本)
+PICO VR 场馆统一设备管理控制中心 (PicoVR-Manager v2.0.0 - Rust 原生一体化版本)
 
 【启动方式】
-直接双击运行 PicoManager.exe 即可（无需任何 .bat 脚本、无需多余 DLL、也无需安装 .NET 运行时）：
+直接双击运行 PicoVR-Manager.exe 即可（无需任何 .bat 脚本、无需多余 DLL、也无需安装 .NET 运行时）：
   - 启动后自动打开原生桌面控制中心界面；
   - 同进程自动运行 HTTP/WebSocket 后台服务（默认端口 8999，供本端与局域网平板访问）与 UDP 播控服务（默认端口 8998）；
   - 若局域网内其他主机已开启服务模式，可在客户端右上角切换「连接远程服务模式」并输入对方 IP 与端口即可直接使用；
-  - 关闭窗口将最小化至系统托盘继续在后台运行，右键托盘图标可选择「彻底退出 PicoManager」。
+  - 关闭窗口将最小化至系统托盘继续在后台运行，右键托盘图标可选择「彻底退出 PicoVR-Manager」。
 
 【目录文件说明】
-  - PicoManager.exe          一体化桌面端 + 内嵌后台 + 原生 SDK 集成主程序
+  - PicoVR-Manager.exe       一体化桌面端 + 内嵌后台 + 原生 SDK 集成主程序
   - config.json              运行配置文件（端口、体验项目、设备别名与默认项目映射）
 
 【前置要求】

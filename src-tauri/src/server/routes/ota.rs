@@ -29,7 +29,7 @@ async fn upload_update() -> impl IntoResponse {
         StatusCode::BAD_REQUEST,
         Json(json!({
             "success": false,
-            "message": "出于安全加固考量，当前 Rust 一体化客户端已禁用未签名热替换；请直接替换 Build 目录中的新版 PicoManager.exe 后重启。"
+            "message": "出于安全加固考量，当前 Rust 一体化客户端已禁用未签名热替换；请直接替换 Build 目录中的新版 PicoVR-Manager.exe 后重启。"
         })),
     )
 }
